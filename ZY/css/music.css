@@ -1,0 +1,938 @@
+/**
+ * music.css - 一起听歌 + 灵动岛悬浮歌词 样式
+ * 全主题自适应，仅使用 :root CSS 变量
+ *
+ * ★ [参考通话弹窗] 音乐弹窗 #music-player-overlay 挂载在 <body> 直接子级
+ *   使用 position: fixed 全屏定位，与通话窗口 (#call-window) 同级
+ *   有最小化按钮，最小化后隐藏弹窗、显示灵动岛（类似通话的 #call-mini-pill）
+ *
+ * ★ [全局脱离] 灵动岛 #dynamic-island 挂载在 body 直接子级
+ *   使用 position: fixed 全屏自由拖动，不受聊天容器 overflow/边界限制
+ *   z-index 设为全局最高值，永远置顶不被任何页面模块遮挡
+ *   初始位置 CSS 居中 (left:50%; translateX(-50%))，拖拽后 JS 接管
+ */
+
+/* ========== 音乐播放器模态层（body 直接子级，参考通话弹窗） ========== */
+/* [fixed 全屏] position: fixed 全屏覆盖，z-index 与通话窗口同级 */
+#music-player-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 99800; /* 略低于通话窗口 (99900)，高于普通页面元素 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px 16px;
+    box-sizing: border-box;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.25s ease, visibility 0.25s ease;
+}
+#music-player-overlay.active {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+/* 弹窗面板 - 参考通话 #call-window 的卡片样式 */
+#music-player-panel {
+    background: var(--secondary-bg);
+    border-radius: 18px;
+    width: 100%;
+    max-width: 520px;
+    max-height: calc(100vh - 40px); /* 上下各留 20px */
+    margin: auto;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+    overflow: hidden;
+    transform: translateY(20px);
+    transition: transform 0.28s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+#music-player-overlay.active #music-player-panel {
+    transform: translateY(0);
+}
+
+/* ---- 面板头部（新增最小化按钮） ---- */
+.music-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+.music-panel-header h3 {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.music-panel-header h3 i {
+    color: var(--accent-color);
+    font-size: 1rem;
+}
+/* 最小化按钮 */
+.music-minimize-btn {
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 50%;
+    background: var(--primary-bg);
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+    margin-left: auto;
+    margin-right: 5px;
+}
+.music-minimize-btn:hover {
+    background: rgba(var(--accent-color-rgb), 0.15);
+    color: var(--accent-color);
+}
+.music-close-btn {
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 50%;
+    background: var(--primary-bg);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+}
+.music-close-btn:hover {
+    background: rgba(var(--accent-color-rgb), 0.15);
+    color: var(--accent-color);
+}
+
+/* ---- 歌曲上传区 ---- */
+.music-upload-area {
+    margin: 8px 14px;
+    padding: 11px;
+    border: 2px dashed var(--border-color);
+    border-radius: var(--radius-sm);
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+.music-upload-area:hover {
+    border-color: var(--accent-color);
+    background: rgba(var(--accent-color-rgb), 0.04);
+}
+.music-upload-area i {
+    font-size: 1.3rem;
+    color: var(--accent-color);
+    margin-bottom: 4px;
+    display: block;
+}
+.music-upload-area p {
+    margin: 2px 0 0;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    font-family: var(--font-family);
+}
+.music-upload-area small {
+    display: block;
+    font-size: 0.66rem;
+    color: var(--text-secondary);
+    opacity: 0.65;
+    margin-top: 2px;
+    font-family: var(--font-family);
+}
+.music-upload-input {
+    display: none;
+}
+
+/* ---- 工具按钮行 ---- */
+.music-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 0 14px 6px;
+}
+.music-tool-btn {
+    padding: 4px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    background: var(--primary-bg);
+    color: var(--text-primary);
+    font-size: 0.7rem;
+    font-family: var(--font-family);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    white-space: nowrap;
+}
+.music-tool-btn:hover {
+    border-color: var(--accent-color);
+    background: rgba(var(--accent-color-rgb), 0.06);
+    color: var(--accent-color);
+}
+.music-tool-btn i { font-size: 0.68rem; }
+.music-tool-btn.danger {
+    color: #e06060;
+    border-color: rgba(224, 96, 96, 0.3);
+}
+.music-tool-btn.danger:hover {
+    background: rgba(224, 96, 96, 0.08);
+    border-color: #e06060;
+    color: #e06060;
+}
+.music-tool-btn.small {
+    padding: 3px 6px;
+    font-size: 0.66rem;
+    border-radius: 6px;
+}
+
+/* ---- 批量选择栏 ---- */
+.music-batch-bar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 14px;
+    margin: 0 14px 4px;
+    background: rgba(var(--accent-color-rgb), 0.06);
+    border-radius: var(--radius-xs);
+    border: 1px solid rgba(var(--accent-color-rgb), 0.15);
+    font-size: 0.7rem;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    flex-wrap: wrap;
+}
+.music-batch-bar span {
+    flex: 1;
+    min-width: 50px;
+    font-weight: 500;
+}
+
+/* ---- 存储空间提示 ---- */
+.music-storage-bar {
+    padding: 4px 14px;
+    margin: 0 14px 4px;
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    font-family: var(--font-family);
+    text-align: center;
+    opacity: 0.7;
+}
+.music-storage-bar.warning {
+    color: #e0a040;
+    opacity: 1;
+}
+.music-storage-bar.danger {
+    color: #e06060;
+    opacity: 1;
+    font-weight: 500;
+}
+
+/* ---- 歌曲列表多选模式 ---- */
+.music-song-item.select-mode .music-song-index {
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.music-song-item.selected {
+    background: rgba(var(--accent-color-rgb), 0.12) !important;
+    border: 1px solid rgba(var(--accent-color-rgb), 0.25) !important;
+}
+.music-song-item.selected .music-song-index {
+    background: var(--accent-color);
+    color: #fff;
+}
+.music-song-item .music-song-check {
+    display: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 4px;
+    border: 2px solid var(--border-color);
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.5rem;
+    transition: all 0.2s;
+}
+.music-song-item.select-mode .music-song-check {
+    display: flex;
+}
+.music-song-item.select-mode .music-song-index {
+    display: none;
+}
+.music-song-item.select-mode.selected .music-song-check {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+    color: #fff;
+}
+
+/* ---- 导入进度条 ---- */
+.music-import-progress {
+    margin: 4px 14px 0;
+    padding: 6px 10px;
+    background: rgba(var(--accent-color-rgb), 0.06);
+    border-radius: var(--radius-xs);
+    border: 1px solid rgba(var(--accent-color-rgb), 0.15);
+    text-align: center;
+    font-size: 0.72rem;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+}
+.music-import-progress .progress-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--border-color);
+    border-radius: 2px;
+    margin-top: 4px;
+    overflow: hidden;
+}
+.music-import-progress .progress-fill {
+    height: 100%;
+    background: var(--accent-color);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+}
+.music-import-progress .progress-text {
+    margin-top: 2px;
+    font-size: 0.63rem;
+    color: var(--text-secondary);
+}
+
+/* ---- 播放器主体 ---- */
+.music-now-playing {
+    padding: 8px 14px;
+    text-align: center;
+    flex-shrink: 0;
+}
+.music-now-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    margin: 0 0 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.music-now-artist {
+    font-size: 0.72rem;
+    color: var(--text-secondary);
+    font-family: var(--font-family);
+    margin: 0;
+}
+
+/* ---- 播放器控制栏 ---- */
+.music-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 4px 14px 6px;
+    flex-shrink: 0;
+}
+.music-ctrl-btn {
+    width: 30px;
+    height: 30px;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+    font-size: 0.82rem;
+}
+.music-ctrl-btn.prev,
+.music-ctrl-btn.next {
+    background: var(--primary-bg);
+    color: var(--text-secondary);
+}
+.music-ctrl-btn.prev:hover,
+.music-ctrl-btn.next:hover {
+    background: rgba(var(--accent-color-rgb), 0.1);
+    color: var(--accent-color);
+}
+.music-ctrl-btn.play {
+    width: 40px;
+    height: 40px;
+    background: var(--accent-color);
+    color: #fff;
+    font-size: 1.05rem;
+    box-shadow: 0 4px 14px rgba(var(--accent-color-rgb), 0.35);
+}
+.music-ctrl-btn.play:hover {
+    transform: scale(1.06);
+}
+.music-ctrl-btn.play.paused {
+    padding-left: 2px;
+}
+
+/* 音量滑块 */
+.music-volume-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0 14px 5px;
+    flex-shrink: 0;
+}
+.music-volume-wrap i {
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+}
+.music-volume-slider {
+    flex: 1;
+    max-width: 90px;
+    height: 3px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--border-color);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+.music-volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    cursor: pointer;
+}
+.music-volume-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    cursor: pointer;
+    border: none;
+}
+
+/* 进度条 */
+.music-progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 14px 6px;
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    font-family: var(--font-family);
+    flex-shrink: 0;
+}
+.music-progress-bar {
+    flex: 1;
+    height: 3px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--border-color);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+.music-progress-bar::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    cursor: pointer;
+}
+.music-progress-bar::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    cursor: pointer;
+    border: none;
+}
+
+/* ---- 歌词预览 ---- */
+.music-lyrics-preview {
+    margin: 0 14px;
+    padding: 5px 8px;
+    max-height: 58px;
+    overflow-y: auto;
+    text-align: center;
+    font-size: 0.74rem;
+    color: var(--text-secondary);
+    font-family: var(--font-family);
+    line-height: 1.55;
+    flex-shrink: 0;
+}
+.music-lyrics-preview .lrc-current {
+    color: var(--accent-color);
+    font-weight: 500;
+    font-size: 0.8rem;
+}
+
+/* ---- 歌曲列表 ---- */
+.music-playlist {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 14px 8px;
+    max-height: 180px;
+}
+.music-playlist:empty::after {
+    content: '还没有歌曲，点击上方导入';
+    display: block;
+    text-align: center;
+    padding: 24px 0;
+    font-size: 0.76rem;
+    color: var(--text-secondary);
+    opacity: 0.5;
+    font-family: var(--font-family);
+}
+.music-song-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 8px;
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-bottom: 2px;
+}
+.music-song-item:hover {
+    background: var(--primary-bg);
+}
+.music-song-item.playing {
+    background: rgba(var(--accent-color-rgb), 0.08);
+    border: 1px solid rgba(var(--accent-color-rgb), 0.2);
+}
+.music-song-index {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--primary-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.64rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+.music-song-item.playing .music-song-index {
+    background: var(--accent-color);
+    color: #fff;
+}
+.music-song-info {
+    flex: 1;
+    min-width: 0;
+}
+.music-song-name {
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    font-weight: 500;
+    font-family: var(--font-family);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.music-song-duration {
+    font-size: 0.63rem;
+    color: var(--text-secondary);
+    font-family: var(--font-family);
+}
+.music-song-delete {
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.2s, background 0.2s;
+    flex-shrink: 0;
+}
+.music-song-item:hover .music-song-delete {
+    opacity: 1;
+}
+.music-song-delete:hover {
+    background: rgba(255, 80, 80, 0.12);
+    color: #e06060;
+}
+
+/* ================================================================
+ * ★ 灵动岛悬浮歌词窗口（body 直接子级，全局脱离 main-chat-area）
+ * [全局脱离] position: fixed 全屏，不受聊天容器 overflow/boundary 限制
+ * [层级最高] z-index: 2147483647 （浏览器最大安全 z-index）
+ * [初始居中] left:50%; translateX(-50%) CSS 居中，避免 JS left:0 的问题
+ * [拖拽接管] 用户拖拽后 JS 设置绝对坐标 + transform:none，CSS 居中失效
+ * [最小Y限制] top:88px，避让 header 导航栏
+ * ================================================================ */
+#dynamic-island {
+    position: fixed;
+    top: 88px;          /* [偏移] 默认远离 header 区域 */
+    left: 50%;          /* [初始居中] CSS 水平居中，未拖拽时不设 left 像素值 */
+    transform: translateX(-50%);
+    z-index: 2147483647; /* [层级最高] 浏览器允许的最大安全 z-index */
+    display: none;
+    align-items: center;
+    gap: 7px;
+    padding: 7px 12px;
+    border-radius: 22px;
+    background: var(--secondary-bg);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14);
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+    white-space: nowrap;
+    max-width: 88vw;
+    transition: box-shadow 0.2s, opacity 0.18s;
+}
+#dynamic-island:active {
+    cursor: grabbing;
+}
+#dynamic-island.dragging {
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+    opacity: 0.92;
+}
+#dynamic-island.island-hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* ★ [拖拽后] 类名标记，JS 已接管坐标 */
+#dynamic-island.drag-taken {
+    /* transform 由 JS 重置为 none，left/top 由 JS 设置 */
+    transform: none;
+}
+
+.di-music-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent-color), rgba(var(--accent-color-rgb), 0.6));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    animation: diPulse 2s ease-in-out infinite;
+}
+.di-music-icon i {
+    color: #fff;
+    font-size: 0.65rem;
+}
+@keyframes diPulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+}
+.di-music-icon.paused {
+    animation: none;
+    opacity: 0.7;
+}
+
+.di-lyrics-wrap {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.di-song-title {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 170px;
+}
+.di-lyric-line {
+    font-size: 0.62rem;
+    color: var(--accent-color);
+    font-family: var(--font-family);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 170px;
+    transition: color 0.3s;
+    font-weight: 500;
+}
+
+.di-close-btn {
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 50%;
+    background: var(--primary-bg);
+    color: var(--text-secondary);
+    font-size: 0.55rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: background 0.2s, color 0.2s;
+}
+.di-close-btn:hover {
+    background: rgba(255, 80, 80, 0.12);
+    color: #e06060;
+}
+
+/* ================================================================
+ * 邀约弹窗（body 直接子级，全局层级）
+ * ================================================================ */
+#music-invite-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    z-index: 2147483646; /* [全局层级] 略低于灵动岛，高于所有页面模块 */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+#music-invite-overlay.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.music-invite-card {
+    background: var(--secondary-bg);
+    border-radius: 16px;
+    padding: 23px 20px 17px;
+    width: 85vw;
+    max-width: 300px;
+    text-align: center;
+    box-shadow: var(--shadow);
+    transform: scale(0.9);
+    transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+}
+#music-invite-overlay.active .music-invite-card {
+    transform: scale(1);
+}
+
+.music-invite-icon {
+    font-size: 2rem;
+    margin-bottom: 8px;
+    color: var(--accent-color);
+    animation: diPulse 1.8s ease-in-out infinite;
+}
+.music-invite-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    margin: 0 0 4px;
+}
+.music-invite-subtitle {
+    font-size: 0.74rem;
+    color: var(--text-secondary);
+    font-family: var(--font-family);
+    margin: 0 0 6px;
+    line-height: 1.5;
+}
+.music-invite-song {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 12px;
+    background: rgba(var(--accent-color-rgb), 0.1);
+    color: var(--accent-color);
+    font-size: 0.7rem;
+    font-family: var(--font-family);
+    margin-bottom: 16px;
+}
+
+.music-invite-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+}
+.music-invite-accept {
+    flex: 1;
+    max-width: 100px;
+    padding: 8px 0;
+    border: none;
+    border-radius: var(--radius-xs);
+    background: var(--accent-color);
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: var(--font-family);
+    cursor: pointer;
+    transition: var(--transition);
+}
+.music-invite-accept:hover {
+    opacity: 0.88;
+    transform: translateY(-1px);
+}
+.music-invite-decline {
+    flex: 1;
+    max-width: 100px;
+    padding: 8px 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    background: var(--primary-bg);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    font-family: var(--font-family);
+    cursor: pointer;
+    transition: var(--transition);
+}
+.music-invite-decline:hover {
+    border-color: var(--accent-color);
+    color: var(--accent-color);
+}
+
+/* ---- 设置面板概率滑块 ---- */
+.music-probability-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin: 3px 0;
+}
+.music-probability-row label {
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.music-probability-row label i {
+    color: var(--accent-color);
+}
+.music-probability-slider {
+    flex: 1;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--border-color);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+.music-probability-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-color);
+    cursor: pointer;
+}
+.music-probability-val {
+    min-width: 30px;
+    text-align: right;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent-color);
+    font-family: var(--font-family);
+}
+
+/* ========== 响应式：移动端适配 ========== */
+@media screen and (max-width: 520px) {
+    #music-player-overlay {
+        padding: 10px 8px;
+        align-items: flex-start;
+    }
+    #music-player-panel {
+        max-width: 100%;
+        max-height: calc(100vh - 20px);
+        border-radius: 14px;
+    }
+    .music-panel-header {
+        padding: 9px 12px;
+    }
+    .music-panel-header h3 {
+        font-size: 0.85rem;
+    }
+    .music-upload-area {
+        margin: 6px 12px;
+        padding: 10px;
+    }
+    .music-upload-area i {
+        font-size: 1.2rem;
+    }
+    .music-toolbar {
+        padding: 0 12px 5px;
+        gap: 4px;
+    }
+    .music-tool-btn {
+        padding: 3px 7px;
+        font-size: 0.66rem;
+    }
+    .music-now-playing {
+        padding: 6px 12px;
+    }
+    .music-now-title {
+        font-size: 0.84rem;
+    }
+    .music-controls {
+        gap: 10px;
+        padding: 3px 12px 5px;
+    }
+    .music-ctrl-btn {
+        width: 28px;
+        height: 28px;
+        font-size: 0.76rem;
+    }
+    .music-ctrl-btn.play {
+        width: 36px;
+        height: 36px;
+        font-size: 0.95rem;
+    }
+    .music-progress-wrap {
+        padding: 0 12px 6px;
+    }
+    .music-lyrics-preview {
+        margin: 0 12px;
+        max-height: 48px;
+    }
+    .music-playlist {
+        padding: 0 12px 6px;
+        max-height: 150px;
+    }
+    .music-song-item {
+        padding: 6px 7px;
+        gap: 5px;
+    }
+
+    /* 移动端灵动岛下移 */
+    #dynamic-island {
+        top: 70px;
+        padding: 6px 10px;
+        border-radius: 20px;
+        gap: 5px;
+    }
+    .di-music-icon {
+        width: 24px;
+        height: 24px;
+    }
+    .di-song-title {
+        max-width: 110px;
+        font-size: 0.62rem;
+    }
+    .di-lyric-line {
+        max-width: 110px;
+        font-size: 0.58rem;
+    }
+    .music-invite-card {
+        width: 90vw;
+        padding: 18px 14px 12px;
+    }
+}
