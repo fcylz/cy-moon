@@ -1,0 +1,1364 @@
+﻿<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>幸逢</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="apple-touch-icon" href="https://i.postimg.cc/281KzSNY/IMG-3531.jpg">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="style.css">
+<!-- 用户自定义样式注入点：必须在 style.css 之后加载，
+     否则同等优先级（同样带 !important）的声明会因为源码顺序在前而被
+     style.css 中后出现的内置规则覆盖，导致"明明设置了气泡却看不出变化" -->
+<style id="user-font"></style>
+<style id="user-bubble"></style>
+<style id="user-chat-css"></style>
+<style id="user-home-css"></style>
+<!-- 密码状态极速检测脚本 -->
+<script>
+  (function() {
+    if (localStorage.getItem("sc_authed") === "true") {
+      document.documentElement.classList.add("is-authenticated");
+    }
+  })();
+</script>
+</head>
+<body>
+
+<div class="viewport" id="vp">
+<!-- ══ Lock Screen Gate 密码锁屏 ══ -->
+<div id="lockScreen" class="lock-screen">
+  <div class="lock-container">
+    <div class="lock-icon">
+      <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="5" y="11" width="14" height="11" rx="2" ry="2" />
+        <path d="M12 11V7a4 4 0 0 0-8 0v4" transform="translate(4, 0)" />
+        <circle cx="12" cy="16" r="1.5" fill="currentColor"/>
+      </svg>
+    </div>
+    <div class="lock-title">CHAMBER LOCKED</div>
+    <div class="lock-desc">
+      请输入解密钥匙以开启。
+      <span class="warning-text">※ 请勿向他人公开或泄露钥匙，一经发现将立即更换。频繁泄露将停止分享，请理解与配合。</span>
+    </div>
+    <div class="lock-input-wrap">
+      <input type="password" id="lockInput" class="lock-input" placeholder="Enter key..." onkeydown="if(event.key==='Enter')checkLock()">
+      <button class="lock-btn-submit" onclick="checkLock()">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+    </div>
+    <div id="lockError" class="lock-error"></div>
+  </div>
+</div>
+  <!-- ══ Welcome ══ -->
+ <div id="welcome">
+  <div class="w-canvas">
+    <canvas id="wCanvas"></canvas>
+  </div>
+  <div class="w-center">
+    <div class="w-emblem">
+      <svg class="w-ring r1" viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="90" fill="none" stroke="currentColor" stroke-width=".8" stroke-dasharray="4 8"/>
+      </svg>
+      <svg class="w-ring r2" viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="70" fill="none" stroke="currentColor" stroke-width=".5" stroke-dasharray="2 6"/>
+      </svg>
+      <svg class="w-ring r3" viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="48" fill="none" stroke="currentColor" stroke-width="1.2"/>
+      </svg>
+      <div class="w-core">
+        <div class="w-core-inner"></div>
+      </div>
+    </div>
+
+    <!-- 排版主区 -->
+    <div class="w-typo-stage" id="wTypoStage">
+      <!-- JS 动态生成字符 -->
+    </div>
+
+    <!-- 副文 -->
+    <div class="w-text" id="wText"></div>
+
+    <!-- kept for syncUI compat -->
+    <div class="w-title" id="wTitle" style="display:none"></div>
+  </div>
+  <div class="w-tap">
+    <span></span><span></span><span></span>
+  </div>
+</div>
+
+  <!-- ══ Layout 1 ══ -->
+  <div class="home" id="homeL1">
+      <div class="home-bg-layer" id="homeBgLayer"></div>
+    <div class="home-scroll">
+      <div class="l1">
+
+        <!-- Profile -->
+        <div class="card l1-profile" style="grid-column:span 6;">
+  <img class="av ph" data-img="selfAvatar" src="">
+  <div class="profile-info">
+    <div class="nm editable" data-key="l1_name" placeholder="未定义"></div>
+    <div class="lo">
+      <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+      <span class="editable" data-key="l1_loc" placeholder="未定义"></span>
+    </div>
+  </div>
+  <div class="profile-stats">
+    <div class="ps-item"><b class="editable" data-key="l1_stat1_n" placeholder="0"></b><span class="editable" data-key="l1_stat1_l" placeholder="—"></span></div>
+    <div class="ps-div"></div>
+    <div class="ps-item"><b class="editable" data-key="l1_stat2_n" placeholder="0"></b><span class="editable" data-key="l1_stat2_l" placeholder="—"></span></div>
+  </div>
+</div>
+
+        <!-- Anniversary · 无边框无背景，头像放大 -->
+        <div class="anni-wrap" style="grid-column:span 3;">
+          <div class="anni-bubble editable" data-key="anni_label" placeholder="未定义" onclick="event.stopPropagation();openAnniEdit();">未定义</div>
+          <div class="anni-avpair">
+  <img class="aav ph" data-img="oppAvatar" src="">
+  <img class="aav ph" data-img="selfAvatar" src="">
+</div>
+          <div class="anni-counter" id="anniDaysMain" onclick="openAnniEdit()">0</div>
+          <div class="anni-unit">天</div>
+        </div>
+
+        <!-- Staggered photos · 两张交错，上小下大 -->
+        <div class="stagger-photos" style="grid-column:span 3;">
+         <img class="sp-back ph" data-img="l1_p2" src="">
+<img class="sp-front ph" data-img="l1_p1" src="">
+        </div>
+
+        <!-- Music -->
+        <div class="music-card" id="musicCard" style="grid-column:span 6;">
+          <img class="m-cover ph" data-img="music_cover" src="">
+          <div class="m-info">
+            <div class="m-title editable" data-key="l1_song" placeholder="未定义"></div>
+            <div class="m-sub editable" data-key="l1_artist" placeholder="未定义"></div>
+          </div>
+          <div class="m-right">
+            <div class="m-eq" id="musicEq"><span></span><span></span><span></span><span></span></div>
+            <button class="play-btn" id="musicPlay">
+              <svg viewBox="0 0 24 24"><g id="playIcon"><polygon points="5 4 21 12 5 20 5 4" fill="currentColor"/></g></svg>
+            </button>
+          </div>
+        </div>
+        <div class="aes-card" data-comp="aes-card">
+          <div class="aes-head">
+            <div class="aes-head-l">
+              <div class="aes-av-wrap">
+                <img class="aes-av ph" data-img="selfAvatar" src="">
+              </div>
+              <div class="aes-info">
+                <div class="aes-name editable" data-key="aes_name" data-placeholder="昵称"></div>
+                <div class="aes-sub editable" data-key="aes_sub" data-placeholder="副文"></div>
+              </div>
+            </div>
+            <div class="aes-dots"><span></span><span></span><span></span></div>
+          </div>
+
+          <div class="aes-body">
+            <!-- 左侧文字列 -->
+            <div class="aes-side aes-side-l">
+              <div class="aes-lbl editable" data-key="aes_tag" data-placeholder="标签"></div>
+              <div class="aes-quote editable" data-key="aes_tags" data-placeholder="文案"></div>
+              <div class="aes-caption editable" data-key="aes_f1" data-placeholder="注脚"></div>
+            </div>
+
+            <!-- 中央圆形图片 -->
+            <div class="aes-media-center">
+              <div class="aes-circle-wrap">
+                <img class="aes-main ph" data-img="aes_main" src="">
+                <div class="aes-heart">
+                  <svg width="13" height="12" viewBox="0 0 24 22" fill="currentColor">
+                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右侧文字列 -->
+            <div class="aes-side aes-side-r">
+              <div class="aes-lbl aes-lbl-r editable" data-key="aes_r_lbl" data-placeholder="标签"></div>
+              <div class="aes-headline editable" data-key="aes_title" data-placeholder="标题"></div>
+              <div class="aes-caption aes-caption-r editable" data-key="aes_f2" data-placeholder="·"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Polaroid strip · 无爱心 -->
+        <div class="polaroid-strip" style="grid-column:span 6;">
+          <div class="polaroid-row">
+            <div class="polaroid-card p1"><img class="ph" data-img="polar1" src=""></div>
+<div class="polaroid-card p2"><img class="ph" data-img="polar2" src=""></div>
+<div class="polaroid-card p3"><img class="ph" data-img="polar3" src=""></div>
+<div class="polaroid-card p4"><img class="ph" data-img="polar4" src=""></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <div class="dock-wrap">
+      <div class="home-typing-bar" id="homeTypingBar">
+        <span class="htb-wave"><i></i><i></i><i></i><i></i><i></i></span>
+        <span class="htb-text" id="homeTypingText">正在输入</span>
+      </div>
+      <div class="dock" id="dockL1"></div>
+    </div>
+  </div>
+
+  <!-- ══ Layout 2 ══ -->
+  <div class="home" id="homeL2">
+      <div class="home-bg-layer" id="homeBgLayerL2"></div>
+    <div class="home-scroll">
+      <div class="l2">
+
+        <!-- Cover + avatar -->
+        <div class="l2-cover-wrap">
+          <img class="l2-cover ph" data-img="l2_cover" src="">
+        </div>
+        <div class="l2-avwrap">
+          <img class="l2-av ph" data-img="selfAvatar" src="">
+        </div>
+
+        <!-- Info -->
+        <div class="l2-info">
+          <div class="t editable" data-key="l2_name" placeholder="未定义"></div>
+          <div class="s editable block" data-key="l2_bio" placeholder="未定义"></div>
+        </div>
+
+        <!-- Stats -->
+        <div class="l2-stats">
+          <div class="it">
+            <div class="n editable" data-key="l2_s1" placeholder="0"></div>
+            <div class="l editable" data-key="l2_lbl1" placeholder="未定义"></div>
+          </div>
+          <div class="stat-sep"></div>
+          <div class="it">
+            <div class="n editable" data-key="l2_s2" placeholder="0"></div>
+            <div class="l editable" data-key="l2_lbl2" placeholder="未定义"></div>
+          </div>
+          <div class="stat-sep"></div>
+          <div class="it">
+            <div class="n editable" data-key="l2_s3" placeholder="0"></div>
+            <div class="l editable" data-key="l2_lbl3" placeholder="未定义"></div>
+          </div>
+        </div>
+
+        <!-- Search -->
+        <div class="l2-search">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span class="editable" data-key="l2_search" placeholder="未定义"></span>
+        </div>
+
+        <!-- Bubble + image duo -->
+        <div class="l2-duo-grid">
+          <div class="l2-duo-left">
+            <div class="dl-bubble-wrapper left">
+              <img class="miniav ph" data-img="selfAvatar" src="">
+              <div class="dl-bubble"><span class="dl-text editable" data-key="l2_bub1" placeholder="未定义"></span></div>
+            </div>
+            <div class="dl-bubble-wrapper right">
+              <img class="miniav ph" data-img="oppAvatar" src="">
+              <div class="dl-bubble"><span class="dl-text editable" data-key="l2_bub2" placeholder="未定义"></span></div>
+            </div>
+          </div>
+          <div class="l2-duo-right">
+            <img class="ph" data-img="l2_duo" src="">
+          </div>
+        </div>
+
+        <!-- Post · 无顶部空白 -->
+        <div class="l2-post">
+          <div class="l2-post-head">
+            <div class="pname-wrap">
+              <div class="pname editable" data-key="l2_p1_name" placeholder="未定义"></div>
+              <div class="ptime editable" data-key="l2_p1_time" placeholder="未定义"></div>
+            </div>
+          </div>
+          <div class="l2-post-divider"></div>
+          <div class="l2-post-body editable block" data-key="l2_p1_body" placeholder="未定义"></div>
+          <div class="l2-post-footer">
+            <span>
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+              <span class="editable" data-key="l2_p1_like" placeholder="0"></span>
+            </span>
+            <span>
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              <span class="editable" data-key="l2_p1_cmt" placeholder="0"></span>
+            </span>
+          </div>
+          <div class="l2-post-comment">
+  <div class="cmt-av-wrap">
+    <img class="cmt-av ph" data-img="oppAvatar" src="">
+    <div class="cmt-av-sub editable" data-key="l2_p1_cmt2_role" placeholder="读者"></div>
+  </div>
+  <div class="cmt-body">
+    <div class="cmt-name editable" data-key="l2_p1_cmt2_name" placeholder="未定义"></div>
+    <div class="cmt-text editable" data-key="l2_p1_cmt2_body" placeholder="未定义"></div>
+  </div>
+</div>
+        </div>
+
+      </div>
+    </div>
+    <div class="dock-wrap"><div class="dock" id="dockL2"></div></div>
+  </div>
+
+  <!-- ══ CHAT APP ══ -->
+  <div class="app" id="chatApp" data-chat-style="1" data-hasbg="0">
+    <div class="chat-bg-layer" id="chatBgLayer"></div>
+
+    <div class="chat-head head-style-1">
+      <div class="back" onclick="closeApp('chatApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </div>
+      <div class="chat-head-info">
+        <img class="av ph" data-img="oppAvatar" src="">
+        <div class="meta">
+          <div class="n editable" data-key="opp_name" placeholder="未定义"></div>
+          <div class="s editable" data-key="opp_bio" placeholder="未定义"></div>
+        </div>
+      </div>
+      <div class="chat-head-tools">
+      </div>
+    </div>
+
+    <div class="chat-head head-style-2 hidden">
+      <div class="h2-top">
+        <button class="style-back-btn" onclick="closeApp('chatApp')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="h2-tools">
+        </div>
+      </div>
+      <div class="h2-center">
+        <div class="h2-center-side left">
+          <div class="h2-name editable" data-key="opp_name" placeholder="彼"></div>
+          <div class="h2-tag editable" data-key="style2_sub" placeholder="未定义"></div>
+        </div>
+        <div class="h2-avatar-pair">
+          <img class="h2-avatar ph" data-img="oppAvatar" src="">
+          <img class="h2-avatar ph" data-img="selfAvatar" src="">
+          <div class="h2-heart-badge">♡</div>
+        </div>
+        <div class="h2-center-side right">
+          <div class="h2-name editable" data-key="l1_name" placeholder="我"></div>
+          <div class="h2-tag editable" data-key="style2_tag" placeholder="未定义"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="chat-head head-style-3 hidden">
+      <div class="h3-top">
+        <button class="style-back-btn" onclick="closeApp('chatApp')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="h2-tools">
+        </div>
+      </div>
+      <div class="h3-avpair-row">
+        <div class="h3-bubble left editable" data-key="style3_b1" placeholder="未定义"></div>
+        <div class="h3-mid-avatar-container">
+          <div class="h3-pair">
+            <img class="ph" data-img="oppAvatar" src="">
+            <img class="ph" data-img="selfAvatar" src="">
+          </div>
+        </div>
+        <div class="h3-bubble right editable" data-key="style3_b2" placeholder="未定义"></div>
+      </div>
+      <div class="h3-divider">
+        <div class="h3-div-line"></div>
+        <div class="h3-sub editable" data-key="style3_sub" placeholder="未定义"></div>
+        <div class="h3-div-line"></div>
+      </div>
+    </div>
+
+    <div class="chat-head head-style-4 hidden">
+      <div class="h4-top-bar">
+        <button class="style-back-btn" onclick="closeApp('chatApp')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="h4-dual-tag">
+          <span class="seg a editable" data-key="style4_t1" placeholder="未定义"></span>
+          <span class="seg b editable" data-key="style4_t2" placeholder="未定义"></span>
+        </div>
+        <div class="h2-tools">
+        </div>
+      </div>
+      <div class="h4-row">
+        <div class="h4-square"><img class="ph" data-img="oppAvatar" src=""></div>
+        <div class="h4-text-area">
+          <div class="h4-stamp editable" data-key="style4_stamp" placeholder="未定义"></div>
+          <div class="h4-title editable" data-key="style4_title" placeholder="未定义"></div>
+          <div class="h4-sub editable" data-key="style4_sub" placeholder="未定义"></div>
+        </div>
+      </div>
+      <div class="h4-rule"></div>
+    </div>
+
+    <div class="search-pane" id="searchPane">
+      <input id="chatSearch" placeholder="…" oninput="doSearchChat()">
+      <div class="res" id="searchRes"></div>
+    </div>
+
+    <div class="chat-flow" id="chatFlow"></div>
+
+    <div class="scroll-bot" id="scrollBot" onclick="scrollChatBottom()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+      <span class="unread hidden" id="unreadBadge"></span>
+    </div>
+
+    <div class="ctx-menu" id="ctxMenu">
+        <div class="ctx-item" id="ctxTTS">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>播放语音
+      </div>
+      <div class="ctx-item" id="ctxQuote">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>引用
+      </div>
+      <div class="ctx-item" id="ctxSearch">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/>
+        </svg>
+        搜索
+      </div>
+      <div class="ctx-item" id="ctxAddCard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="16" rx="2"/><line x1="12" y1="9" x2="12" y2="15"/><line x1="9" y1="12" x2="15" y2="12"/>
+        </svg>
+        加入字卡
+      </div>      
+      <div class="ctx-item danger" id="ctxDel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>删除
+      </div>
+    </div>
+
+    <div class="quote-preview" id="quotePreview">
+      <div class="qp-line"></div>
+      <div class="qp-info">
+        <div class="qp-from" id="qpFrom"></div>
+        <div class="qp-text" id="qpText"></div>
+      </div>
+      <div class="qp-x" onclick="clearPendingQuote()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </div>
+    </div>
+
+    <div class="sticker-picker" id="stickerPicker">
+      <div class="sp-head">
+        <span class="sp-title">表情包</span>
+        <span class="sp-manage" onclick="gotoStickerLibrary()">管理</span>
+      </div>
+      <div class="sp-grid" id="spGrid"></div>
+    </div>
+
+    <div class="chat-input input-style-1">
+      <button class="in-btn speak" onclick="triggerSpeak()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      </button>
+      <input class="in-field msg-in" placeholder="" onkeydown="if(event.key==='Enter')sendMsg()">
+      <button class="in-btn sticker" onclick="toggleStickerPicker()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="8.6" cy="9.6" r=".9" fill="currentColor" stroke="none"/><circle cx="15.4" cy="9.6" r=".9" fill="currentColor" stroke="none"/><path d="M7.5 14.2c1 1.8 2.8 2.8 4.5 2.8s3.5-1 4.5-2.8"/></svg>
+      </button>
+      <button class="in-btn send" onclick="sendMsg()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div class="chat-input input-style-2 hidden">
+      <div class="i2-input-row">
+        <button class="i2-speak-btn" onclick="triggerSpeak()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+        </button>
+        <input class="i2-field msg-in" placeholder="" onkeydown="if(event.key==='Enter')sendMsg()">
+        <button class="i2-sticker-btn" onclick="toggleStickerPicker()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="8.6" cy="9.6" r=".9" fill="currentColor" stroke="none"/><circle cx="15.4" cy="9.6" r=".9" fill="currentColor" stroke="none"/><path d="M7.5 14.2c1 1.8 2.8 2.8 4.5 2.8s3.5-1 4.5-2.8"/></svg>
+        </button>
+        <button class="i2-send" onclick="sendMsg()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="chat-input input-style-3 hidden">
+      <input class="i3-field msg-in" placeholder="" onkeydown="if(event.key==='Enter')sendMsg()">
+      <button class="i3-send alt" onclick="triggerSpeak()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="14" height="14"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+      </button>
+      <button class="i3-send sticker" onclick="toggleStickerPicker()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="14" height="14"><circle cx="12" cy="12" r="9"/><circle cx="8.6" cy="9.6" r=".9" fill="currentColor" stroke="none"/><circle cx="15.4" cy="9.6" r=".9" fill="currentColor" stroke="none"/><path d="M7.5 14.2c1 1.8 2.8 2.8 4.5 2.8s3.5-1 4.5-2.8"/></svg>
+      </button>
+      <button class="i3-send" onclick="sendMsg()">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+      </button>
+    </div>
+
+    <div class="chat-input input-style-4 hidden">
+      <button class="i4-send alt" onclick="triggerSpeak()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="14" height="14"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+      </button>
+      <input class="i4-field msg-in" placeholder="" onkeydown="if(event.key==='Enter')sendMsg()">
+      <button class="i4-send sticker" onclick="toggleStickerPicker()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="14" height="14"><circle cx="12" cy="12" r="9"/><circle cx="8.6" cy="9.6" r=".9" fill="currentColor" stroke="none"/><circle cx="15.4" cy="9.6" r=".9" fill="currentColor" stroke="none"/><path d="M7.5 14.2c1 1.8 2.8 2.8 4.5 2.8s3.5-1 4.5-2.8"/></svg>
+      </button>
+      <button class="i4-send" onclick="sendMsg()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="14" height="14"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ══ CARDS APP ══ -->
+  <div class="app" id="cardsApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('cardsApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">字卡</span>
+      <div style="display:flex;gap:2px;">
+        <button class="h-btn batch-toggle-btn" onclick="headerToggleBatch()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="5" width="4" height="4" rx="1"/><rect x="3" y="12" width="4" height="4" rx="1"/><line x1="11" y1="7" x2="21" y2="7"/><line x1="11" y1="14" x2="21" y2="14"/></svg>
+        </button>
+        <button class="h-btn" id="cardsBulkBtn" title="批量导入" onclick="openBulkAdd()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button class="h-btn" id="cardsTxtBtn" onclick="openTxtIO()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        </button>
+        <button class="h-btn" onclick="headerAdd()">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="stab-bar">
+      <button class="stab active" data-tab="cards" onclick="switchCardsTab('cards')">字卡</button>
+      <button class="stab" data-tab="stickers" onclick="switchCardsTab('stickers')">表情包</button>
+    </div>
+    <div class="stab-panels-wrap">
+      <div class="stab-panel active" id="cstab-cards">
+        <div class="cards-toolbar">
+          <div class="search-bar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input id="cardSearch" placeholder="…" oninput="renderCards()">
+          </div>
+        </div>
+        <div class="deck" id="cardDeck"></div>
+        <div class="batch-bar" id="batchBar">
+          <span class="cnt" id="batchCnt"></span>
+          <button class="bbtn" onclick="batchMove()">移</button>
+          <button class="bbtn" onclick="batchShield(true)">屏</button>
+          <button class="bbtn" onclick="batchShield(false)">恢</button>
+          <button class="bbtn danger" onclick="batchDelete()">删</button>
+        </div>
+      </div>
+      <div class="stab-panel" id="cstab-stickers">
+        <div class="sticker-grid" id="stickerGrid"></div>
+        <div class="batch-bar" id="stickerBatchBar">
+          <span class="cnt" id="stickerBatchCnt"></span>
+          <button class="bbtn" onclick="batchShieldStickers(true)">屏</button>
+          <button class="bbtn" onclick="batchShieldStickers(false)">恢</button>
+          <button class="bbtn danger" onclick="batchDeleteStickers()">删</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ STATS APP ══ -->
+  <div class="app" id="statsApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('statsApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">年鉴</span>
+      <button class="h-btn placeholder"></button>
+    </div>
+    <div class="stab-bar">
+      <button class="stab active" data-tab="almanac" onclick="switchStatsTab('almanac')">年鉴</button>
+      <button class="stab" data-tab="survey" onclick="switchStatsTab('survey')">问卷</button>
+    </div>
+    <div class="stab-panels-wrap">
+      <div class="stab-panel active" id="sstab-almanac">
+        <div class="deck" id="statsDeck"></div>
+      </div>
+      <div class="stab-panel" id="sstab-survey">
+        <div class="survey-toolbar">
+          <button class="pill-btn" onclick="openNewSurvey()">+ 新建问卷</button>
+          <button class="pill-btn" onclick="document.getElementById('fpSurvey').click()">导入</button>
+        </div>
+        <div class="deck" id="surveyDeck"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="app" id="settingsApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('settingsApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">配置</span>
+      <button class="h-btn placeholder"><svg viewBox="0 0 24 24"></svg></button>
+    </div>
+
+    <!-- Tab bar -->
+    <div class="stab-bar">
+      <button class="stab active" data-tab="home" onclick="switchStab('home')">主页</button>
+      <button class="stab" data-tab="look" onclick="switchStab('look')">外观</button>
+      <button class="stab" data-tab="chat" onclick="switchStab('chat')">聊天</button>
+      <button class="stab" data-tab="sound" onclick="switchStab('sound')">音频</button>
+      <button class="stab" data-tab="data" onclick="switchStab('data')">数据</button>
+    </div>
+
+    <!-- ══ Tab panels wrap ══ -->
+    <div class="stab-panels-wrap">
+    <!-- ══ Tab: 主页 ══ -->
+    <div class="stab-panel active" id="stab-home">
+      <div class="settings-scroll">
+
+        <!-- 头像 -->
+        <div class="sblock">
+          <div class="sblock-label">头像</div>
+          <div class="sav-row">
+            <div class="sav-item" onclick="uploadImg('selfAvatar')">
+              <div class="sav-ring"><img data-img="selfAvatar" class="ph sav-img"></div>
+              <span>我</span>
+            </div>
+            <div class="sav-item" onclick="uploadImg('oppAvatar')">
+              <div class="sav-ring"><img data-img="oppAvatar" class="ph sav-img"></div>
+              <span>彼</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 布局 -->
+        <div class="sblock">
+          <div class="sblock-label">布局</div>
+          <div class="slayout-switch">
+            <div class="slayout-opt" data-v="1" onclick="setLayout(1)">
+              <div class="slayout-preview l1p">
+                <div class="slp-bar wide"></div>
+                <div class="slp-row"><div class="slp-bar"></div><div class="slp-bar"></div></div>
+                <div class="slp-bar medium"></div>
+              </div>
+              <span>Ⅰ</span>
+            </div>
+            <div class="slayout-opt" data-v="2" onclick="setLayout(2)">
+              <div class="slayout-preview l2p">
+                <div class="slp-cover"></div>
+                <div class="slp-av"></div>
+                <div class="slp-bar medium center"></div>
+              </div>
+              <span>Ⅱ</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 背景 -->
+        <div class="sblock">
+          <div class="sblock-label">首页背景</div>
+          <div class="sbtn-row">
+            <button class="sbtn" onclick="triggerHomeBgPick()">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              上传
+            </button>
+            <button class="sbtn ghost" onclick="resetHomeBg()">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.51"/></svg>
+              重置
+            </button>
+          </div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>隐藏美学卡片背景</span>
+              <div class="sw" id="sw_hideAesBg" onclick="cfgToggle('hideAesBg')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>隐藏拍立得背景</span>
+              <div class="sw" id="sw_hidePolarBg" onclick="cfgToggle('hidePolarBg')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 导航 -->
+        <div class="sblock">
+          <div class="sblock-label">内容</div>
+          <div class="snav-list">
+            <div class="snav-item" onclick="openApp('textsApp')">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+              <span>文案中心</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+            <div class="snav-item" onclick="openCustomHomeApp()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9h6M9 12h6M9 15h4"/></svg>
+              <span>自定义主页</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ Tab: 外观 ══ -->
+    <div class="stab-panel" id="stab-look">
+      <div class="settings-scroll">
+
+        <!-- 主题 -->
+        <div class="sblock">
+          <div class="sblock-label">主题</div>
+          <div class="stheme-row">
+            <div class="stheme-opt light" data-theme="light" onclick="setTheme('light')">
+              <div class="stheme-orb"></div>
+              <span>浅色</span>
+            </div>
+            <div class="stheme-opt dark" data-theme="dark" onclick="setTheme('dark')">
+              <div class="stheme-orb"></div>
+              <span>深色</span>
+            </div>
+            <div class="stheme-opt system" data-theme="system" onclick="setTheme('system')">
+              <div class="stheme-orb"></div>
+              <span>跟随</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 字号 -->
+        <div class="sblock">
+          <div class="sblock-label">字号</div>
+          <div class="ssize-grid">
+            <div class="ssize-item">
+              <span class="ssize-label">界面</span>
+              <div class="num-stepper">
+                <button onclick="setUiFontSize(Math.max(10,cfg.fontSize-1));document.getElementById('fsDisp').innerText=cfg.fontSize;document.getElementById('fsStepper').innerText=cfg.fontSize">−</button>
+                <span id="fsDisp">13</span>
+                <button onclick="setUiFontSize(Math.min(20,cfg.fontSize+1));document.getElementById('fsDisp').innerText=cfg.fontSize;document.getElementById('fsStepper').innerText=cfg.fontSize">+</button>
+              </div>
+            </div>
+            <div class="ssize-item">
+              <span class="ssize-label">聊天</span>
+              <div class="num-stepper">
+                <button onclick="setChatFontSize(Math.max(10,cfg.chatFontSize-1));document.getElementById('chatFsDisp').innerText=cfg.chatFontSize;document.getElementById('cfsStepper').innerText=cfg.chatFontSize">−</button>
+                <span id="chatFsDisp">13</span>
+                <button onclick="setChatFontSize(Math.min(20,cfg.chatFontSize+1));document.getElementById('chatFsDisp').innerText=cfg.chatFontSize;document.getElementById('cfsStepper').innerText=cfg.chatFontSize">+</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 导航 -->
+        <div class="sblock">
+          <div class="sblock-label">更多</div>
+          <div class="snav-list">
+            <div class="snav-item" onclick="openFontModal()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+              <span>字体设置</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+            <div class="snav-item" onclick="openBgCssModal()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              <span>背景 / CSS</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ Tab: 聊天 ══ -->
+    <div class="stab-panel" id="stab-chat">
+      <div class="settings-scroll">
+
+        <!-- 聊天样式 -->
+        <div class="sblock">
+          <div class="sblock-label">样式</div>
+          <div class="chat-style-grid">
+            <div class="cs-card" data-s="1" onclick="setChatStyle(1)">
+              <div class="cs-preview p1"><div class="cs-bub r"></div><div class="cs-bub l"></div><div class="cs-bub r sm"></div></div>
+              <span>经典</span>
+            </div>
+            <div class="cs-card" data-s="2" onclick="setChatStyle(2)">
+              <div class="cs-preview p2"><div class="cs-bub r cap"></div><div class="cs-bub l cap"></div></div>
+              <span>胶囊</span>
+            </div>
+            <div class="cs-card" data-s="3" onclick="setChatStyle(3)">
+              <div class="cs-preview p3"><div class="cs-bub r"></div><div class="cs-bub l"></div></div>
+              <span>双向</span>
+            </div>
+            <div class="cs-card" data-s="4" onclick="setChatStyle(4)">
+              <div class="cs-preview p4"><div class="cs-bub diary"></div><div class="cs-bub diary r"></div></div>
+              <span>日记</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 显示 -->
+        <div class="sblock">
+          <div class="sblock-label">显示</div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>头像</span>
+              <div class="sw" id="sw_showAvatar" onclick="cfgToggle('showAvatar')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>对方名称</span>
+              <div class="sw" id="sw_showName" onclick="cfgToggle('showName')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>我方名称</span>
+              <div class="sw" id="sw_showSelfName" onclick="cfgToggle('showSelfName')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>时间戳</span>
+              <div class="sw" id="sw_showTime" onclick="cfgToggle('showTime')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>精确到秒</span>
+              <div class="sw" id="sw_showSeconds" onclick="cfgToggle('timeShowSeconds')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>对方自定义时间戳</span>
+              <div class="sw" id="sw_oppCustomTime" onclick="cfgToggle('oppCustomTime')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>我方已读</span>
+              <div class="sw" id="sw_showRead" onclick="cfgToggle('showRead')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>已读对方</span>
+              <div class="sw" id="sw_showSelfRead" onclick="cfgToggle('showSelfRead')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 行为 -->
+        <div class="sblock">
+          <div class="sblock-label">行为</div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>已读不回</span>
+              <div class="sw" id="sw_ignoreOn" onclick="cfgToggle('ignoreOn')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>引用回复</span>
+              <div class="sw" id="sw_quoteOn" onclick="cfgToggle('quoteOn')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>连句</span>
+              <div class="sw" id="sw_sentenceJoin" onclick="cfgToggle('sentenceJoin')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+          <div class="snav-list" style="margin-top:8px;">
+            <div class="snav-item" onclick="openSepSettings()">
+              <span>连句符号设置</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+          <div class="stoggle-group" style="margin-top:8px;">
+            <div class="stoggle-row">
+              <span>主动发送</span>
+              <div class="sw" id="sw_activeSend" onclick="cfgToggle('activeSend')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+          <div class="sinput-row" style="margin-top:10px;">
+            <span class="sinput-label">回复延迟（秒）</span>
+            <div class="range-pair">
+              <input class="inp sm" type="number" id="delayMin" min="0" max="60" value="2" onchange="cfgSet('delayMin',+this.value)">
+              <span class="range-dash">—</span>
+              <input class="inp sm" type="number" id="delayMax" min="0" max="120" value="5" onchange="cfgSet('delayMax',+this.value)">
+            </div>
+          </div>
+          <div class="sinput-row" id="activeIntervalRow">
+            <span class="sinput-label">主动间隔（分）</span>
+            <div class="range-pair">
+              <input class="inp sm" type="number" id="activeMin" min="1" max="1440" value="5" onchange="cfgSet('activeMin',+this.value)">
+              <span class="range-dash">—</span>
+              <input class="inp sm" type="number" id="activeMax" min="1" max="1440" value="20" onchange="cfgSet('activeMax',+this.value)">
+            </div>
+          </div>
+        </div>
+
+        <!-- 表情包 -->
+        <div class="sblock">
+          <div class="sblock-label">表情包</div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>对方随机发送表情包</span>
+              <div class="sw" id="sw_stickerOn" onclick="cfgToggle('stickerOn')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+          <div class="snav-list" style="margin-top:8px;">
+            <div class="snav-item" onclick="openApp('cardsApp');switchCardsTab('stickers')">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="8.6" cy="9.6" r=".9" fill="currentColor" stroke="none"/><circle cx="15.4" cy="9.6" r=".9" fill="currentColor" stroke="none"/><path d="M7.5 14.2c1 1.8 2.8 2.8 4.5 2.8s3.5-1 4.5-2.8"/></svg>
+              <span>管理表情包</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- 群组 -->
+        <div class="sblock">
+          <div class="sblock-label">群组</div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>群聊模式</span>
+              <div class="sw" id="sw_groupMode" onclick="cfgToggle('groupMode')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+          <div class="snav-list" style="margin-top:8px;">
+            <div class="snav-item" onclick="openApp('groupApp')">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              <span>成员管理</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ Tab: 音频 ══ -->
+    <div class="stab-panel" id="stab-sound">
+      <div class="settings-scroll">
+
+        <!-- 通知 -->
+        <div class="sblock">
+          <div class="sblock-label">通知</div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>浮卡</span>
+              <div class="sw" id="sw_popupOn" onclick="cfgToggle('popupOn')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>系统通知</span>
+              <div class="sw" id="sw_notifOn" onclick="toggleNotif()"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>音效</span>
+              <div class="sw" id="sw_soundOn" onclick="cfgToggle('soundOn')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+          <div class="snav-list" style="margin-top:8px;">
+            <div class="snav-item" onclick="openSoundModal()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              <span>音效管理</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- 音乐 -->
+        <div class="sblock">
+          <div class="sblock-label">音乐</div>
+          <div class="sinput-row">
+            <span class="sinput-label">歌曲 URL</span>
+            <input class="inp" id="cfg_musicUrl" placeholder="https://…" style="flex:1;min-width:0;text-align:right;font-size:11px;" oninput="cfgSet('musicUrl',this.value.trim())">
+          </div>
+        </div>
+
+        <!-- TTS -->
+        <div class="sblock">
+          <div class="sblock-label">语音合成 TTS</div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>自动朗读</span>
+              <div class="sw" id="sw_autoTTS_adv" onclick="cfgToggle('autoTTS')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>持久缓存</span>
+              <div class="sw" id="sw_ttsPersist" onclick="cfgToggle('ttsPersist')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+          <div class="sinput-stack">
+            <div class="sinput-row">
+              <span class="sinput-label">API 地址</span>
+              <input class="inp" id="cfg_ttsUrl" placeholder="https://api.minimax.chat/v1/t2a_v2" style="flex:1;min-width:0;text-align:right;font-size:10px;" oninput="cfgSet('ttsUrl',this.value.trim())">
+            </div>
+            <div class="sinput-row">
+              <span class="sinput-label">API 密钥</span>
+              <input class="inp" type="password" id="cfg_ttsKey" placeholder="Bearer Token" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsKey',this.value.trim())">
+            </div>
+            <div class="sinput-row">
+              <span class="sinput-label">Group ID</span>
+              <input class="inp" id="cfg_ttsGroupId" placeholder="部分老账号必填" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsGroupId',this.value.trim())">
+            </div>
+            <div class="sinput-row">
+              <span class="sinput-label">模型</span>
+              <input class="inp" id="cfg_ttsModel" placeholder="speech-01-turbo" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsModel',this.value.trim())">
+            </div>
+            <div class="sinput-row">
+              <span class="sinput-label">音色 ID</span>
+              <input class="inp" id="cfg_ttsVoice" placeholder="male-qn-qingse" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsVoice',this.value.trim())">
+            </div>
+            <div class="sinput-row">
+              <span class="sinput-label">语气</span>
+              <input class="inp" id="cfg_ttsPrompt" placeholder="温柔、撒娇、小声" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsPrompt',this.value.trim())">
+            </div>
+            <div class="sinput-row">
+              <span class="sinput-label">语速</span>
+              <input class="inp sm" type="number" step="0.1" id="cfg_ttsSpeed" placeholder="1.0" style="width:64px;" oninput="cfgSet('ttsSpeed',parseFloat(this.value)||1)">
+            </div>
+            <div class="sinput-row">
+              <span class="sinput-label">音量</span>
+              <input class="inp sm" type="number" step="0.1" id="cfg_ttsVol" placeholder="1.0" style="width:64px;" oninput="cfgSet('ttsVol',parseFloat(this.value)||1)">
+            </div>
+          </div>
+          <div class="stts-test">
+            <input class="inp stts-input" id="cfg_ttsTestText" placeholder="输入想听的句子…" value="你好，很高兴遇见你。">
+            <button class="sbtn" onclick="testMiniMaxTTS()">播放试听</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ══ Tab: 数据 ══ -->
+    <div class="stab-panel" id="stab-data">
+      <div class="settings-scroll">
+
+        <div class="sblock">
+          <div class="sblock-label">备份</div>
+          <div class="snav-list">
+            <div class="snav-item" onclick="openBackup()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>导入 / 导出</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+        <div class="sblock">
+          <div class="sblock-label" style="color:var(--danger,#e74c3c);">危险操作</div>
+          <div class="snav-list">
+            <div class="snav-item danger" onclick="clearAllChats()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              <span>清空聊天记录</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+            <div class="snav-item danger" onclick="factoryReset()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+              <span>重置所有数据</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    </div><!-- /stab-panels-wrap -->
+  </div><!-- /settingsApp -->
+
+  <!-- ══ Sub-apps ══ -->
+<!-- Custom Home -->
+<div class="app" id="customHomeApp">
+  <div class="app-head">
+    <button class="h-btn" onclick="closeApp('customHomeApp')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <span class="t">自定义主页</span>
+    <button class="h-btn" onclick="applyCustomHome()">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+    </button>
+  </div>
+  <div class="deck" style="gap:12px;">
+    <div class="cfg-group">
+      <div class="cfg-group-label">CSS 注入</div>
+      <div class="cfg-group-body" style="padding:12px;">
+        <textarea class="fld area" id="ch_css" style="min-height:120px;font-family:monospace;font-size:11px;" placeholder=".l1 { gap: 6px; } .anni-wrap { display:none; }"></textarea>
+      </div>
+    </div>
+    <div class="cfg-group">
+      <div class="cfg-group-label">JS 注入</div>
+      <div class="cfg-group-body" style="padding:12px;">
+        <textarea class="fld area" id="ch_js" style="min-height:120px;font-family:monospace;font-size:11px;" placeholder="// 在主页渲染后执行&#10;// document.querySelector('.anni-counter').style.fontSize='60px'"></textarea>
+      </div>
+    </div>
+    <div class="cfg-group">
+      <div class="cfg-group-label">组件可见性</div>
+      <div class="cfg-group-body" id="chVisGrid"></div>
+    </div>
+    <div class="cfg-group">
+      <div class="cfg-group-label">预设方案</div>
+      <div class="cfg-group-body">
+        <div class="cfg-row tappable" onclick="applyHomePreset('minimal')">
+          <span class="cfg-label">极简（仅聊天入口）</span>
+          <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+        <div class="cfg-row tappable" onclick="applyHomePreset('photo')">
+          <span class="cfg-label">画廊（突出图片）</span>
+          <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+        <div class="cfg-row tappable" onclick="applyHomePreset('reset')">
+          <span class="cfg-label">重置为默认</span>
+          <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+  <!-- Texts -->
+  <div class="app" id="textsApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('textsApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">文案</span>
+      <button class="h-btn" onclick="exportTexts()">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+    </div>
+    <div class="deck" id="textsDeck"></div>
+  </div>
+
+  <!-- Appearance -->
+  <div class="app" id="appearanceApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('appearanceApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">外观</span>
+      <button class="h-btn placeholder"></button>
+    </div>
+    <div class="deck">
+      <div class="cfg-group">
+        <div class="cfg-group-label">聊天背景</div>
+        <div class="cfg-group-body">
+          <div class="cfg-row">
+            <span class="cfg-label">背景图</span>
+            <div style="display:flex;gap:6px;">
+              <button class="sm-action-btn" onclick="imgPickKey='chatBg';document.getElementById('fpImg').click()">上传</button>
+              <button class="sm-action-btn" onclick="resetBg()">重置</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="cfg-group">
+        <div class="cfg-group-label">轮播图</div>
+        <div class="cfg-group-body">
+          <div id="carManage"></div>
+          <div class="cfg-row tappable" onclick="addCarouselImg()">
+            <span class="cfg-label">添加</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </div>
+        </div>
+      </div>
+      <div class="cfg-group">
+        <div class="cfg-group-label">气泡 CSS</div>
+        <div class="cfg-group-body" style="padding:12px;">
+          <textarea class="fld area" id="cf_bub" oninput="cfgSet('customBubble',this.value)" style="min-height:60px;" placeholder=".bubble { … }"></textarea>
+        </div>
+      </div>
+      <div class="cfg-group">
+        <div class="cfg-group-label">聊天 CSS</div>
+        <div class="cfg-group-body" style="padding:12px;">
+          <textarea class="fld area" id="cf_chatcss" oninput="cfgSet('customChatCss',this.value)" style="min-height:60px;"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Style -->
+  <div class="app" id="styleApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('styleApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">样式</span>
+      <button class="h-btn placeholder"></button>
+    </div>
+    <div class="deck">
+      <div class="cfg-group">
+        <div class="cfg-group-label">聊天界面</div>
+        <div class="cfg-group-body">
+          <div class="cfg-row">
+            <span class="cfg-label">经典极简</span>
+            <input type="radio" name="cs" class="radio" value="1" onchange="setChatStyle(1)">
+          </div>
+          <div class="cfg-row">
+            <span class="cfg-label">胶囊紧凑</span>
+            <input type="radio" name="cs" class="radio" value="2" onchange="setChatStyle(2)">
+          </div>
+          <div class="cfg-row">
+            <span class="cfg-label">双向私语</span>
+            <input type="radio" name="cs" class="radio" value="3" onchange="setChatStyle(3)">
+          </div>
+          <div class="cfg-row">
+            <span class="cfg-label">极简日记</span>
+            <input type="radio" name="cs" class="radio" value="4" onchange="setChatStyle(4)">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Font -->
+  <div class="app" id="fontApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('fontApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">字体</span>
+      <button class="h-btn placeholder"></button>
+    </div>
+    <div class="deck">
+      <div class="cfg-group">
+        <div class="cfg-group-label">字体族名</div>
+        <div class="cfg-group-body" style="padding:12px;">
+          <input class="fld" id="cf_font" placeholder="如 NanoFullSong" oninput="cfgSet('customFont',this.value)">
+        </div>
+      </div>
+      <div class="cfg-group">
+        <div class="cfg-group-label">CSS / URL</div>
+        <div class="cfg-group-body" style="padding:12px;">
+          <textarea class="fld area" id="cf_fontcss" placeholder="@import url(…) 或直接粘贴地址" oninput="cfgSet('customFontCss',this.value)" style="min-height:80px;font-family:monospace;font-size:11px;"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sound -->
+  <div class="app" id="soundApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('soundApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">音效</span>
+      <button class="h-btn placeholder"></button>
+    </div>
+    <div class="deck">
+      <div class="cfg-group">
+        <div class="cfg-group-body">
+          <div id="sndList"></div>
+          <div class="cfg-row tappable" onclick="document.getElementById('fpSnd').click()">
+            <span class="cfg-label">上传</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </div>
+          <div class="cfg-row tappable" onclick="testSound()">
+            <span class="cfg-label">试听</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Group -->
+  <div class="app" id="groupApp">
+    <div class="app-head">
+      <button class="h-btn" onclick="closeApp('groupApp')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <span class="t">成员</span>
+      <button class="h-btn" onclick="addMember()">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </button>
+    </div>
+    <div class="deck" id="memberDeck" style="gap:8px;"></div>
+  </div>
+
+  <!-- ══ Popup ══ -->
+  <div class="msg-popup" id="msgPopup">
+    <img class="pav ph" id="popAv" src="">
+    <div class="pinfo">
+      <div class="pname"><span id="popName"></span><span class="pt" id="popTime"></span></div>
+      <div class="pmsg" id="popMsg"></div>
+    </div>
+    <div class="ph-tip"></div>
+  </div>
+
+  <!-- ══ Survey Invite Popup ══ -->
+  <div class="invite-popup" id="invitePopup">
+    <div class="ip-icon" id="ipIcon"></div>
+    <div class="ip-body">
+      <div class="ip-title" id="ipTitle"></div>
+      <div class="ip-sub" id="ipSub"></div>
+    </div>
+  </div>
+
+  <!-- ══ Survey Fill Fullscreen ══ -->
+  <div class="survey-full" id="surveyFull">
+    <div class="sf-full-head">
+      <button class="h-btn" onclick="closeSurveyFull()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+      <div class="sf-full-title" id="sfFullTitle"></div>
+      <div class="sf-full-progress" id="sfFullProgress"></div>
+    </div>
+    <div class="sf-full-body" id="sfFullBody"></div>
+  </div>
+
+  <!-- ══ Modal ══ -->
+  <div class="modal-mask" id="modal" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <div class="modal-h">
+        <span class="t" id="mTitle"></span>
+        <div class="x" onclick="closeModal()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </div>
+      </div>
+      <div id="mBody"></div>
+    </div>
+  </div>
+
+  <!-- ══ Toast ══ -->
+  <div class="toast" id="toast"></div>
+
+  <!-- ══ File inputs ══ -->
+  <input type="file" id="fpImg"  accept="image/*"        style="display:none">
+  <input type="file" id="fpSnd"  accept="audio/*,.mp3,.wav,.ogg,.aac,.flac,.m4a" multiple style="display:none">
+  <input type="file" id="fpJson" accept=".json"           style="display:none">
+  <input type="file" id="fpCard" accept=".txt"            style="display:none">
+  <input type="file" id="fpSticker" accept="image/*" multiple style="display:none">
+  <input type="file" id="fpSurvey" accept=".json"         style="display:none">
+
+</div>
+
+<script src="app.js"></script>
+<script>
+// Settings tab switcher
+window.switchStab = function(tab) {
+  document.querySelectorAll('#settingsApp .stab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('#settingsApp .stab-panel').forEach(p => p.classList.toggle('active', p.id === 'stab-' + tab));
+};
+
+document.getElementById('settingsApp').addEventListener('transitionend', function() {
+  if (!this.classList.contains('active')) return;
+  // sync font size displays
+  const fsD = document.getElementById('fsDisp');
+  const cfD = document.getElementById('chatFsDisp');
+  if (fsD) fsD.innerText = cfg.fontSize;
+  if (cfD) cfD.innerText = cfg.chatFontSize;
+  // legacy stepper IDs used elsewhere
+  const fss = document.getElementById('fsStepper');
+  const cfs = document.getElementById('cfsStepper');
+  if (fss) fss.innerText = cfg.fontSize;
+  if (cfs) cfs.innerText = cfg.chatFontSize;
+  // sync delay/active inputs
+  ['delayMin','delayMax','activeMin','activeMax'].forEach(id => {
+    const el = document.getElementById(id);
+    const map = {delayMin:'delayMin',delayMax:'delayMax',activeMin:'activeMin',activeMax:'activeMax'};
+    if (el) el.value = cfg[map[id]];
+  });
+  const cf = document.getElementById('cf_font');
+  const cfc = document.getElementById('cf_fontcss');
+  if (cf) cf.value = cfg.customFont || '';
+  if (cfc) cfc.value = cfg.customFontCss || '';
+  const bub = document.getElementById('cf_bub');
+  const chatcss = document.getElementById('cf_chatcss');
+  if (bub) bub.value = cfg.customBubble || '';
+  if (chatcss) chatcss.value = cfg.customChatCss || '';
+  // sync layout selectors
+  document.querySelectorAll('.slayout-opt[data-v]').forEach(el =>
+    el.classList.toggle('active', +el.dataset.v === cfg.layout));
+  document.querySelectorAll('.stheme-opt[data-theme]').forEach(el =>
+    el.classList.toggle('active', el.dataset.theme === cfg.theme));
+  // legacy tab-switch compat
+  document.querySelectorAll('.tab-switch .ts-opt[data-v]').forEach(el =>
+    el.classList.toggle('active', +el.dataset.v === cfg.layout));
+  document.querySelectorAll('.tab-switch .ts-opt[data-theme]').forEach(el =>
+    el.classList.toggle('active', el.dataset.theme === cfg.theme));
+  document.querySelectorAll('input[name="cs"]').forEach(r => { r.checked = +r.value === cfg.chatStyle; });
+});
+</script>
+</body>
+</html>
+
