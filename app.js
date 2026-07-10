@@ -440,7 +440,7 @@ function bindEditables(){
       e.stopPropagation();
       const hasImg = !!imgs.aes_body_bg;
       modal("卡片内背景", `<div class="pill-btn-group">
-        <button class="pill-btn" onclick="triggerAesBodyBgPick()">上传背景</button>
+        <label for="fpImg" class="pill-btn" style="cursor:pointer;" onclick="imgPickKey='aes_body_bg'">上传背景</label>
         ${hasImg ? `<button class="pill-btn danger" onclick="clearAesBodyBg()">清除背景</button>` : ""}
       </div>`);
       return;
@@ -486,21 +486,8 @@ function bindImageInteractions(){
 window.uploadImg = k=>{
   if(!k) return; imgPickKey=k; memberPickIdx=-1;
   const hasImg=!!imgs[k];
-  modal("画片",`<div class="pill-btn-group"><button class="pill-btn" id="__imgPickBtn">更换</button>${hasImg?`<button class="pill-btn danger" onclick="clearImgKey('${k}')">清除</button>`:""}</div>`);
-  // Bind file picker trigger directly to button click (avoids async .click() issues on mobile)
-  requestAnimationFrame(()=>{
-    const btn=document.getElementById("__imgPickBtn");
-    if(btn) btn.addEventListener("click",function handler(e){
-      e.preventDefault();
-      closeModal();
-      // Use setTimeout(0) to let modal close, then trigger file picker
-      setTimeout(()=>{
-        const i=document.getElementById("fpImg");
-        if(i){ i.value=""; i.click(); }
-      },50);
-      btn.removeEventListener("click",handler);
-    });
-  });
+  // Use <label for="fpImg"> to reliably trigger file picker on mobile (no .click() needed)
+  modal("画片",`<div class="pill-btn-group"><label for="fpImg" class="pill-btn" style="cursor:pointer;">更换</label>${hasImg?`<button class="pill-btn danger" onclick="clearImgKey('${k}')">清除</button>`:""}</div>`);
 };
 window.triggerImgPick = ()=>{ closeModal(); setTimeout(()=>{ const i=document.getElementById("fpImg"); i.value=""; i.click(); },50); };
 window.clearImgKey = async k=>{ delete imgs[k]; await saveAll(); syncUI(); closeModal(); toast("已清除"); };
@@ -1552,7 +1539,7 @@ window.openAddSticker = () => {
       <span class="ts-opt" data-m="url" onclick="switchAddStickerMode('url')">链接导入</span>
     </div>
     <div class="add-sk-panel active" id="addSkPanel-upload">
-      <div class="sk-upload-zone" onclick="triggerStickerPick()">
+      <div class="sk-upload-zone" style="cursor:pointer;" onclick="closeModal();setTimeout(()=>document.getElementById('fpSticker').click(),50)">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         <span>点击选择图片 / GIF</span>
         <span class="sk-upload-sub">支持多选 · 从相册一次添加多个</span>
@@ -2341,7 +2328,7 @@ window.applyHomePreset = async name => {
 window.openBgCssModal = () => {
   modal("背景 / CSS", `
     <div class="pill-btn-group">
-      <button class="pill-btn" onclick="triggerBgPick()">上传聊天背景</button>
+      <label for="fpImg" class="pill-btn" style="cursor:pointer;" onclick="imgPickKey='chatBg'">上传聊天背景</label>
       <button class="pill-btn" onclick="resetBg()">重置背景</button>
     </div>
     <div class="text-cell-label" style="margin:12px 0 4px;font-size:11px;color:var(--text-mute)">气泡 CSS</div>
