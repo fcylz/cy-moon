@@ -456,12 +456,13 @@ function bindEditables(){
 window.saveText = async(k,isCfg)=>{ const v=document.getElementById("m_text").value; if(isCfg) cfg[k]=v; else texts[k]=v; await saveAll(); syncUI(); closeModal(); };
 
 // ─── Image interactions ───
+var _imgUploadFired = false; // flag to prevent double-fire
 function bindImageInteractions(){
   let pressTimer=null, startX=0, startY=0, target=null, isLong=false;
   const handler={
-    start(ev){ const el=ev.target.closest("[data-img]"); if(!el||el.closest(".row")) return; target=el; isLong=false; const t=ev.touches?ev.touches[0]:ev; startX=t.clientX; startY=t.clientY; pressTimer=setTimeout(()=>{ isLong=true; uploadImg(target.dataset.img); },420); },
+    start(ev){ const el=ev.target.closest("[data-img]"); if(!el||el.closest(".row")) return; target=el; isLong=false; _imgUploadFired=false; const t=ev.touches?ev.touches[0]:ev; startX=t.clientX; startY=t.clientY; pressTimer=setTimeout(()=>{ isLong=true; _imgUploadFired=true; uploadImg(target.dataset.img); },420); },
     move(ev){ if(!pressTimer) return; const t=ev.touches?ev.touches[0]:ev; if(Math.abs(t.clientX-startX)>8||Math.abs(t.clientY-startY)>8){clearTimeout(pressTimer);pressTimer=null;} },
-    end(){ if(pressTimer) clearTimeout(pressTimer); pressTimer=null; if(!isLong&&target) uploadImg(target.dataset.img); target=null; }
+    end(){ if(pressTimer) clearTimeout(pressTimer); pressTimer=null; if(!isLong&&target){ _imgUploadFired=true; uploadImg(target.dataset.img); } target=null; }
   };
   document.body.addEventListener("mousedown",handler.start);
   document.body.addEventListener("touchstart",handler.start,{passive:true});
@@ -469,15 +470,39 @@ function bindImageInteractions(){
   document.body.addEventListener("touchmove",handler.move,{passive:true});
   document.body.addEventListener("mouseup",handler.end);
   document.body.addEventListener("touchend",handler.end);
+
+  // Fallback: direct click on .ph elements for mobile browsers where body delegation fails
+  document.querySelectorAll(".ph[data-img]").forEach(el=>{
+    el.addEventListener("click", function(e){
+      if(_imgUploadFired){ _imgUploadFired=false; return; }
+      if(this.dataset.img && !this.closest(".row")){
+        uploadImg(this.dataset.img);
+      }
+    });
+  });
 }
 
 
 window.uploadImg = k=>{
   if(!k) return; imgPickKey=k; memberPickIdx=-1;
   const hasImg=!!imgs[k];
-  modal("画片",`<div class="pill-btn-group"><button class="pill-btn" onclick="triggerImgPick()">更换</button>${hasImg?`<button class="pill-btn danger" onclick="clearImgKey('${k}')">清除</button>`:""}</div>`);
+  modal("画片",`<div class="pill-btn-group"><button class="pill-btn" id="__imgPickBtn">更换</button>${hasImg?`<button class="pill-btn danger" onclick="clearImgKey('${k}')">清除</button>`:""}</div>`);
+  // Bind file picker trigger directly to button click (avoids async .click() issues on mobile)
+  requestAnimationFrame(()=>{
+    const btn=document.getElementById("__imgPickBtn");
+    if(btn) btn.addEventListener("click",function handler(e){
+      e.preventDefault();
+      closeModal();
+      // Use setTimeout(0) to let modal close, then trigger file picker
+      setTimeout(()=>{
+        const i=document.getElementById("fpImg");
+        if(i){ i.value=""; i.click(); }
+      },50);
+      btn.removeEventListener("click",handler);
+    });
+  });
 };
-window.triggerImgPick = ()=>{ closeModal(); const i=document.getElementById("fpImg"); i.value=""; i.click(); };
+window.triggerImgPick = ()=>{ closeModal(); setTimeout(()=>{ const i=document.getElementById("fpImg"); i.value=""; i.click(); },50); };
 window.clearImgKey = async k=>{ delete imgs[k]; await saveAll(); syncUI(); closeModal(); toast("已清除"); };
 
 // ─── File pickers ───
@@ -1563,7 +1588,7 @@ window.addStickersFromUrls = async () => {
   await saveAll(); window.renderStickers(); closeModal();
   toast(skipped?`已添加 ${added} 个（跳过 ${skipped} 个重复）`:`已添加 ${added} 个`);
 };
-window.triggerStickerPick = () => { closeModal(); const i=document.getElementById("fpSticker"); i.value=""; i.click(); };
+window.triggerStickerPick = () => { closeModal(); setTimeout(()=>{ const i=document.getElementById("fpSticker"); i.value=""; i.click(); },50); };
 function onPickSticker(e){
   const fs=Array.from(e.target.files); if(!fs.length) return;
   let done=0;
@@ -2326,7 +2351,7 @@ window.openBgCssModal = () => {
     <button class="pill-btn" onclick="saveBgCss()">保存</button>
   `);
 };
-window.triggerBgPick = () => { imgPickKey = "chatBg"; closeModal(); document.getElementById("fpImg").value=""; document.getElementById("fpImg").click(); };
+window.triggerBgPick = () => { imgPickKey = "chatBg"; closeModal(); setTimeout(()=>{ document.getElementById("fpImg").value=""; document.getElementById("fpImg").click(); },50); };
 window.saveBgCss = async () => {
   cfg.customBubble  = document.getElementById("m_bubbleCss").value.trim();
   cfg.customChatCss = document.getElementById("m_chatCss").value.trim();
@@ -2341,8 +2366,7 @@ window.triggerHomeBgPick = () => {
 window.triggerAesBodyBgPick = () => {
   imgPickKey = "aes_body_bg";
   closeModal();
-  document.getElementById("fpImg").value = "";
-  document.getElementById("fpImg").click();
+  setTimeout(()=>{ document.getElementById("fpImg").value = ""; document.getElementById("fpImg").click(); },50);
 };
 
 window.clearAesBodyBg = async () => {
