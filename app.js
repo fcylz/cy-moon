@@ -14,7 +14,9 @@ window.DEFAULTS = {
     oppTime:"", oppTimeDate:"", oppTimeSetAt:0, oppCustomTime:true,
     musicUrl:"", musicTitle:"", musicArtist:"", musicLrc:"",
     cloudMusicIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-music/main/index.json",
-    cloudMusicLastSync:0, activeSoundId:"__builtin_thud1__",
+    cloudCardIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-chat/main/Word/word.json",
+    cloudStickerIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json",
+    cloudMusicLastSync:0, cloudCardLastSync:0, cloudStickerLastSync:0, activeSoundId:"__builtin_thud1__",
 customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolarBg:false,minimaxKey: "", minimaxVoice: "male-qn-qingse", autoTTS: false,ttsUrl: "https://api.minimax.chat/v1/t2a_v2",
     ttsKey: "",
     ttsGroupId: "",
@@ -88,7 +90,7 @@ if ("serviceWorker" in navigator) {
 let ctxTargetIdx=-1, musicAudio=null, unreadCount=0, popupTimer=null;
 let imgPickKey="", memberPickIdx=-1, isBatchSelecting=false;
 let cardsActiveTab="cards", isStickerBatchSelecting=false, stickerSelected=[];
-let cloudSongCache=null; // 云端曲库歌曲列表内存缓存
+let cloudSongCache=null, cloudCardCache=null, cloudStickerCache=null; // 云端数据内存缓存
 
 const TEXT_GROUPS = [
   { h:"开屏", keys:[{k:"welcomeTitle",l:"标题"},{k:"welcomeText",l:"副文"}], isCfg:true },
@@ -489,6 +491,7 @@ function bindFilePickers(){
   document.getElementById("fpSnd").addEventListener("change",  onPickSnd);
   document.getElementById("fpJson").addEventListener("change", onPickJson);
   document.getElementById("fpCard").addEventListener("change", onPickCardTxt);
+  document.getElementById("fpCardJson").addEventListener("change", onPickCardJson);
   document.getElementById("fpSurvey").addEventListener("change", onPickSurvey);
   document.getElementById("fpSticker").addEventListener("change", onPickSticker);
 }
@@ -1464,7 +1467,6 @@ window.batchDelete = async()=>{ if(!selected.length) return; cards=cards.filter(
 window.batchShield = async v=>{ if(!selected.length) return; cards.forEach(c=>{if(selected.includes(c.id))c.shielded=v;}); selected=[]; await saveAll(); window.renderCards(); };
 window.batchMove = ()=>{ if(!selected.length) return; const cs=Array.from(new Set(cards.map(c=>c.cat))); const opts=cs.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join(""); modal("批量移组",`<select class="fld" id="m_tg">${opts}</select><input class="fld" id="m_new" placeholder="或新建分组"><button class="pill-btn" onclick="batchMoveDo()">移</button>`); };
 window.batchMoveDo = async()=>{ const tg=document.getElementById("m_new").value.trim()||document.getElementById("m_tg").value; if(!tg) return; cards.forEach(c=>{if(selected.includes(c.id))c.cat=tg;}); selected=[]; await saveAll(); window.renderCards(); closeModal(); };
-window.openTxtIO = ()=>{ modal("TXT",`<div class="pill-btn-group"><button class="pill-btn" onclick="exportCards()">导出</button><button class="pill-btn" onclick="document.getElementById('fpCard').click();closeModal();">导入</button></div>`); };
 window.exportCards = ()=>{ const mm={}; cards.forEach(c=>{(mm[c.cat]=mm[c.cat]||[]).push(c.translation?(c.text+"【翻译】"+c.translation):c.text);}); let s=""; for(const k in mm) s+=`【${k}】\n`+mm[k].join("\n")+"\n\n"; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([s],{type:"text/plain;charset=utf-8"})); a.download=`字卡_${Date.now()}.txt`; a.click(); closeModal(); };
 function onPickCardTxt(e){ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=async ev=>{ await importWithMergePrompt(parseTxtToCards(ev.target.result)); }; r.readAsText(f); }
 window.toggleBatchMode = ()=>{ isBatchSelecting=!isBatchSelecting; const btn=document.querySelector(".batch-toggle-btn"); if(btn) btn.style.opacity=isBatchSelecting?"1":".5"; if(!isBatchSelecting) selected=[]; window.renderCards(); };
@@ -1476,6 +1478,8 @@ window.switchCardsTab = tab => {
   document.querySelectorAll("#cardsApp .stab-panel").forEach(p=>p.classList.toggle("active", p.id==="cstab-"+tab));
   document.getElementById("cardsBulkBtn")?.classList.toggle("hidden", tab!=="cards");
   document.getElementById("cardsTxtBtn")?.classList.toggle("hidden", tab!=="cards");
+  document.getElementById("cardsCloudBtn")?.classList.toggle("hidden", tab!=="cards");
+  document.getElementById("cardsCloudSkBtn")?.classList.toggle("hidden", tab==="cards");
   const btn=document.querySelector(".batch-toggle-btn");
   if(btn) btn.style.opacity=(tab==="stickers"?isStickerBatchSelecting:isBatchSelecting)?"1":".5";
   if(tab==="stickers") window.renderStickers();
@@ -2133,6 +2137,572 @@ window.selectCloudSong = async (filteredIdx) => {
     const btn = document.getElementById("musicPlay");
     if (btn) btn.click();
   }
+};
+
+// ═══ 云端字卡库 ═══
+const CLOUD_CARD_LF_KEY = "cy-card-index";
+
+let _cardLF = null;
+function _ensureCardLF() {
+  if (!_cardLF && typeof localforage !== "undefined") {
+    _cardLF = localforage.createInstance({ name: "SilentChamberCardCache" });
+  }
+  return _cardLF;
+}
+
+// 将 {categories:{key:{label,items}}} 转为扁平数组 [{cat:label,key,items}]]
+function _normaliseCloudCards(data) {
+  if (Array.isArray(data)) {
+    // 旧格式直接数组: [{cat,items}] 或 [{cat,items:[{id,text}]}]
+    return data;
+  }
+  if (data.cards && Array.isArray(data.cards)) {
+    return data.cards; // {cards:[{cat,items}]} 包装
+  }
+  if (data.groups && Array.isArray(data.groups)) {
+    return data.groups; // {groups:[{cat,items}]} 包装
+  }
+  if (data.categories && typeof data.categories === "object") {
+    // 新格式: {categories:{key:{label,items:[{id,text,tags}]}}}
+    const result = [];
+    Object.entries(data.categories).forEach(([key, cat]) => {
+      if (!cat.items || !cat.items.length) return;
+      result.push({ cat: cat.label || key, key, items: cat.items });
+    });
+    return result;
+  }
+  return [];
+}
+
+function _flattenCloudCards(groups) {
+  const all = [];
+  groups.forEach(g => {
+    (g.items || []).forEach(item => {
+      const text = typeof item === "string" ? item : (item.text || "");
+      const translation = typeof item === "string" ? "" : (item.translation || item.tr || "");
+      if (text) all.push({ cat: g.cat, text, translation });
+    });
+  });
+  return all;
+}
+
+async function fetchCloudCards(forceRefresh) {
+  const lf = _ensureCardLF();
+  const indexUrl = cfg.cloudCardIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Word/word.json";
+
+  if (!forceRefresh && cloudCardCache && cloudCardCache.length) return cloudCardCache;
+
+  if (!forceRefresh && lf) {
+    try {
+      const cached = await lf.getItem(CLOUD_CARD_LF_KEY);
+      if (cached && cached.cards && cached.cards.length) {
+        cloudCardCache = cached.cards;
+        updateCloudCardStatus(`已缓存 ${cached.cards.length} 组 · ${new Date(cached.at).toLocaleDateString()}`);
+        return cached.cards;
+      }
+    } catch (e) {}
+  }
+
+  updateCloudCardStatus("正在连接…");
+  try {
+    const res = await fetch(indexUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const cardsData = _normaliseCloudCards(data);
+    if (!Array.isArray(cardsData) || !cardsData.length) throw new Error("索引为空");
+
+    cloudCardCache = cardsData;
+    if (lf) {
+      try { await lf.setItem(CLOUD_CARD_LF_KEY, { cards: cardsData, at: Date.now() }); } catch (e) {}
+    }
+    cfg.cloudCardLastSync = Date.now();
+    saveAllDebounced();
+    const totalItems = cardsData.reduce((s, g) => s + (g.items ? g.items.length : 0), 0);
+    updateCloudCardStatus(`共 ${cardsData.length} 组 · ${totalItems} 条 · 已同步`);
+    return cardsData;
+  } catch (e) {
+    updateCloudCardStatus("连接失败，使用缓存数据");
+    if (cloudCardCache) return cloudCardCache;
+    if (lf) {
+      try { const c = await lf.getItem(CLOUD_CARD_LF_KEY); if (c && c.cards) { cloudCardCache = c.cards; updateCloudCardStatus(`共 ${c.cards.length} 组 · 离线缓存`); return c.cards; } } catch(e2) {}
+    }
+    toast("无法获取云端字卡", "warn");
+    return [];
+  }
+}
+
+function updateCloudCardStatus(msg) {
+  const el = document.getElementById("cloudCardStatus");
+  if (el) { el.style.display = ""; el.textContent = msg; }
+}
+
+window.refreshCloudCards = async () => {
+  const lf = _ensureCardLF();
+  if (lf) { try { await lf.removeItem(CLOUD_CARD_LF_KEY); } catch(e) {} }
+  cloudCardCache = null;
+  await fetchCloudCards(true);
+  toast("字卡库已刷新");
+};
+
+window.openCloudCardLibrary = async () => {
+  const groups = await fetchCloudCards();
+  if (!groups.length) { toast("云端字卡无数据", "warn"); return; }
+  renderCloudCardModal(groups);
+};
+
+// 分组数据结构: { cat:"显示名", key:"内部键", items:[{id,text,tags}]|["字符串"] }
+function _cloudItemText(item) {
+  return typeof item === "string" ? item.trim() : (item.text || "").trim();
+}
+function _cloudItemTranslation(item) {
+  return typeof item === "string" ? "" : (item.translation || item.tr || "");
+}
+
+function renderCloudCardModal(groups) {
+  const totalItems = groups.reduce((s, g) => s + (g.items ? g.items.length : 0), 0);
+  let html = `
+    <div class="cml-search-wrap">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="cml-search" id="cclSearch" placeholder="搜索分组 / 内容…" oninput="filterCloudCards()">
+    </div>
+    <div class="cml-status">本地: <b>${cards.length}</b> 条 · 云端: <b>${totalItems}</b> 条 · 点击分组预览内容，勾选导入</div>
+    <div class="cml-list" id="cclList"></div>
+    <div class="ccl-actions">
+      <button class="pill-btn" onclick="importSelectedCards()" id="cclImportBtn" disabled>导入选中</button>
+      <button class="pill-btn" onclick="selectAllCloudCards()">全选</button>
+      <button class="pill-btn" onclick="closeModal()">关闭</button>
+    </div>
+  `;
+  modal("云端字卡库", html);
+  window._cclGroups = groups;
+  window._cclSelected = new Set();
+  renderCloudCardGroupList(groups);
+
+  // 监听复选框变化
+  document.getElementById("cclList")?.addEventListener("change", updateCclImportBtn);
+}
+
+window.filterCloudCards = () => {
+  const q = (document.getElementById("cclSearch")?.value || "").trim().toLowerCase();
+  const all = window._cclGroups || [];
+  if (!q) return renderCloudCardGroupList(all);
+  const filtered = all.filter(g =>
+    g.cat.toLowerCase().includes(q) ||
+    (g.items || []).some(item => _cloudItemText(item).toLowerCase().includes(q))
+  );
+  renderCloudCardGroupList(filtered);
+};
+
+function _allCloudCardItems(groups) {
+  return _flattenCloudCards(groups);
+}
+
+window._getAllCloudCardItems = () => _allCloudCardItems(window._cclGroups || []);
+
+function renderCloudCardGroupList(groups) {
+  const el = document.getElementById("cclList");
+  if (!el) return;
+
+  if (!groups.length) {
+    el.innerHTML = '<div class="cml-empty">未找到匹配分组</div>';
+    return;
+  }
+
+  el.innerHTML = groups.map((g, gi) => {
+    const items = (g.items || []).filter(item => {
+      const t = _cloudItemText(item);
+      return t.length > 0;
+    });
+    if (!items.length) return "";
+    const preview = items.slice(0, 3).map(item => {
+      const txt = _cloudItemText(item);
+      return `<span class="ccl-preview-item">${escapeHtml(txt.length > 18 ? txt.slice(0, 18) + "…" : txt)}</span>`;
+    }).join("");
+    const tail = items.length > 3 ? `<span class="ccl-preview-more">+${items.length - 3}</span>` : "";
+
+    return `
+    <div class="ccl-group">
+      <div class="ccl-group-head" onclick="this.parentElement.classList.toggle('open')">
+        <span class="ccl-group-arrow">›</span>
+        <label class="ccl-group-check" onclick="event.stopPropagation()">
+          <input type="checkbox" class="ccl-group-cb" data-gidx="${gi}" onchange="toggleCloudCardGroup(this, '${escapeAttr(g.cat)}')">
+        </label>
+        <b class="ccl-group-name">${escapeHtml(g.cat)}</b>
+        <span class="ccl-group-cnt">${items.length} 条</span>
+      </div>
+      <div class="ccl-group-body">
+        ${items.map((item, ii) => {
+          const text = _cloudItemText(item);
+          const translation = _cloudItemTranslation(item);
+          const id = `${g.cat}::${ii}`;
+          const checked = window._cclSelected?.has(id) || false;
+          return `<label class="ccl-item-row">
+            <input type="checkbox" class="ccl-item-cb" data-id="${escapeAttr(id)}" data-cat="${escapeAttr(g.cat)}" data-text="${escapeAttr(text)}" data-tr="${escapeAttr(translation)}" ${checked ? "checked" : ""} onchange="toggleCloudCardItem(this,'${escapeAttr(id)}')">
+            <span class="ccl-item-text">${escapeHtml(text)}</span>
+            ${translation ? `<span class="ccl-item-tr">${escapeHtml(translation)}</span>` : ""}
+          </label>`;
+        }).join("")}
+      </div>
+    </div>`;
+  }).join("");
+
+  updateCclImportBtn();
+}
+
+window.toggleCloudCardGroup = (cb, cat) => {
+  const checked = cb.checked;
+  const body = cb.closest(".ccl-group")?.querySelector(".ccl-group-body");
+  if (body) {
+    body.querySelectorAll(".ccl-item-cb").forEach(itemCb => {
+      itemCb.checked = checked;
+      const id = itemCb.dataset.id;
+      if (id) { if (checked) window._cclSelected.add(id); else window._cclSelected.delete(id); }
+    });
+  }
+  updateCclImportBtn();
+};
+
+window.toggleCloudCardItem = (cb, id) => {
+  if (cb.checked) window._cclSelected.add(id);
+  else window._cclSelected.delete(id);
+  updateCclImportBtn();
+};
+
+function updateCclImportBtn() {
+  const btn = document.getElementById("cclImportBtn");
+  if (!btn) return;
+  const cnt = window._cclSelected?.size || 0;
+  btn.textContent = `导入选中 (${cnt})`;
+  btn.disabled = cnt === 0;
+}
+
+window.selectAllCloudCards = () => {
+  const all = window._cclGroups || [];
+  window._cclSelected = new Set();
+  all.forEach(g => {
+    (g.items || []).forEach((line, ii) => {
+      const id = `${g.cat}::${ii}`;
+      window._cclSelected.add(id);
+    });
+  });
+  renderCloudCardGroupList(all);
+};
+
+window.importSelectedCards = async () => {
+  if (!window._cclSelected || window._cclSelected.size === 0) { toast("未选择字卡"); return; }
+  const all = _flattenCloudCards(window._cclGroups || []);
+  const selected = [];
+  window._cclSelected.forEach(id => {
+    const [cat, idxStr] = id.split("::");
+    const idx = parseInt(idxStr);
+    // 通过 cat+idx 定位到原始分组中的项
+    const groupFound = (window._cclGroups || []).find(g => g.cat === cat);
+    if (!groupFound || !groupFound.items) return;
+    const item = groupFound.items[idx];
+    if (!item) return;
+    const text = _cloudItemText(item);
+    const translation = _cloudItemTranslation(item);
+    if (text) selected.push({ cat, text, translation });
+  });
+
+  if (!selected.length) { toast("无有效内容"); return; }
+
+  const dupes = [];
+  const fresh = [];
+  selected.forEach(item => {
+    if (cards.some(c => c.text === item.text && c.cat === item.cat)) {
+      dupes.push(item);
+    } else {
+      fresh.push(item);
+    }
+  });
+
+  let added = 0;
+  fresh.forEach(item => {
+    cards.push({ id: "c" + Date.now() + (added++), text: item.text, translation: item.translation, cat: item.cat });
+  });
+
+  await saveAll();
+  renderCards();
+  closeModal();
+  const msg = `已导入 ${added} 条`;
+  if (dupes.length) toast(`${msg}（跳过 ${dupes.length} 条重复）`);
+  else toast(msg);
+};
+
+// ═══ 云端表情包库 ═══
+const CLOUD_STICKER_LF_KEY = "cy-sticker-index";
+
+let _stickerLF = null;
+function _ensureStickerLF() {
+  if (!_stickerLF && typeof localforage !== "undefined") {
+    _stickerLF = localforage.createInstance({ name: "SilentChamberStickerCache" });
+  }
+  return _stickerLF;
+}
+
+// 将 {categories:{key:{label,items}}} 转为扁平数组 [{name,src,cat,catLabel,...}]
+function _normaliseCloudStickers(data) {
+  if (Array.isArray(data)) {
+    return data;
+  }
+  if (data.stickers && Array.isArray(data.stickers)) {
+    return data.stickers;
+  }
+  if (data.categories && typeof data.categories === "object") {
+    const result = [];
+    Object.entries(data.categories).forEach(([key, cat]) => {
+      if (!cat.items || !cat.items.length) return;
+      cat.items.forEach(item => {
+        const obj = typeof item === "object" && item !== null ? item : {};
+        result.push({ ...obj, catLabel: cat.label || key, catKey: key });
+      });
+    });
+    return result;
+  }
+  return [];
+}
+
+async function fetchCloudStickers(forceRefresh) {
+  const lf = _ensureStickerLF();
+  const indexUrl = cfg.cloudStickerIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json";
+
+  if (!forceRefresh && cloudStickerCache && cloudStickerCache.length) return cloudStickerCache;
+
+  if (!forceRefresh && lf) {
+    try {
+      const cached = await lf.getItem(CLOUD_STICKER_LF_KEY);
+      if (cached && cached.stickers && cached.stickers.length) {
+        cloudStickerCache = cached.stickers;
+        updateCloudStickerStatus(`已缓存 ${cached.stickers.length} 个 · ${new Date(cached.at).toLocaleDateString()}`);
+        return cached.stickers;
+      }
+    } catch (e) {}
+  }
+
+  updateCloudStickerStatus("正在连接…");
+  try {
+    const res = await fetch(indexUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const stkData = _normaliseCloudStickers(data);
+    if (!Array.isArray(stkData) || !stkData.length) throw new Error("索引为空（暂无表情）");
+
+    cloudStickerCache = stkData;
+    if (lf) {
+      try { await lf.setItem(CLOUD_STICKER_LF_KEY, { stickers: stkData, at: Date.now() }); } catch (e) {}
+    }
+    cfg.cloudStickerLastSync = Date.now();
+    saveAllDebounced();
+    updateCloudStickerStatus(`共 ${stkData.length} 个 · 已同步`);
+    return stkData;
+  } catch (e) {
+    updateCloudStickerStatus("连接失败，使用缓存数据");
+    if (cloudStickerCache) return cloudStickerCache;
+    if (lf) {
+      try { const c = await lf.getItem(CLOUD_STICKER_LF_KEY); if (c && c.stickers) { cloudStickerCache = c.stickers; updateCloudStickerStatus(`共 ${c.stickers.length} 个 · 离线缓存`); return c.stickers; } } catch(e2) {}
+    }
+    toast("无法获取云端表情包", "warn");
+    return [];
+  }
+}
+
+function updateCloudStickerStatus(msg) {
+  const el = document.getElementById("cloudStickerStatus");
+  if (el) { el.style.display = ""; el.textContent = msg; }
+}
+
+window.refreshCloudStickers = async () => {
+  const lf = _ensureStickerLF();
+  if (lf) { try { await lf.removeItem(CLOUD_STICKER_LF_KEY); } catch(e) {} }
+  cloudStickerCache = null;
+  await fetchCloudStickers(true);
+  toast("表情库已刷新");
+};
+
+window.openCloudStickerLibrary = async () => {
+  const stks = await fetchCloudStickers();
+  if (!stks.length) { toast("云端表情无数据", "warn"); return; }
+  renderCloudStickerModal(stks);
+};
+
+function renderCloudStickerModal(stks) {
+  let html = `
+    <div class="cml-search-wrap">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="cml-search" id="cskSearch" placeholder="搜索表情…" oninput="filterCloudStickers()">
+    </div>
+    <div class="cml-status">本地: <b>${stickers.length}</b> 个 · 云端: <b>${stks.length}</b> 个</div>
+    <div class="csk-grid" id="cskGrid"></div>
+    <div class="ccl-actions">
+      <button class="pill-btn" onclick="importSelectedStickers()" id="cskImportBtn" disabled>导入选中</button>
+      <button class="pill-btn" onclick="selectAllCloudStickers()">全选</button>
+      <button class="pill-btn" onclick="closeModal()">关闭</button>
+    </div>
+  `;
+  modal("云端表情库", html);
+  window._cskData = stks;
+  window._cskSelected = new Set();
+  renderCloudStickerGrid(stks);
+  document.getElementById("cskGrid")?.addEventListener("change", updateCskImportBtn);
+}
+
+window.filterCloudStickers = () => {
+  const q = (document.getElementById("cskSearch")?.value || "").trim().toLowerCase();
+  const all = window._cskData || [];
+  if (!q) return renderCloudStickerGrid(all);
+  renderCloudStickerGrid(all.filter(s =>
+    (_stickerName(s) || "").toLowerCase().includes(q) ||
+    (s.catLabel || "").toLowerCase().includes(q)
+  ));
+};
+
+function _stickerSrc(s) { return s.src || s.url || ""; }
+function _stickerName(s) { return s.name || s.title || s.label || "未命名"; }
+
+function renderCloudStickerGrid(stks) {
+  const el = document.getElementById("cskGrid");
+  if (!el) return;
+  if (!stks.length) { el.innerHTML = '<div class="cml-empty">未找到表情</div>'; return; }
+
+  el.innerHTML = stks.map((s, i) => {
+    const src = _stickerSrc(s);
+    const name = _stickerName(s);
+    const cat = s.catLabel || "";
+    const id = `csk_${i}`;
+    const checked = window._cskSelected?.has(id) || false;
+    return `<div class="csk-item">
+      <div class="csk-img-wrap">
+        <img src="${escapeHtml(src)}" loading="lazy" onerror="this.parentElement.classList.add('broken')">
+        ${!src ? '<div class="csk-broken">无图</div>' : ""}
+      </div>
+      <div class="csk-name">${escapeHtml(name)}</div>
+      ${cat ? `<div class="csk-cat">${escapeHtml(cat)}</div>` : ""}
+      <label class="csk-check">
+        <input type="checkbox" data-id="${escapeAttr(id)}" data-src="${escapeAttr(src)}" ${checked ? "checked" : ""} onchange="toggleCloudStickerItem(this,'${escapeAttr(id)}')">
+        <span>${checked ? "已选" : "选择"}</span>
+      </label>
+    </div>`;
+  }).join("");
+  updateCskImportBtn();
+}
+
+window.toggleCloudStickerItem = (cb, id) => {
+  if (cb.checked) window._cskSelected.add(id);
+  else window._cskSelected.delete(id);
+  updateCskImportBtn();
+};
+
+function updateCskImportBtn() {
+  const btn = document.getElementById("cskImportBtn");
+  if (!btn) return;
+  const cnt = window._cskSelected?.size || 0;
+  btn.textContent = `导入选中 (${cnt})`;
+  btn.disabled = cnt === 0;
+}
+
+window.selectAllCloudStickers = () => {
+  window._cskSelected = new Set();
+  (window._cskData || []).forEach((s, i) => window._cskSelected.add(`csk_${i}`));
+  renderCloudStickerGrid(window._cskData || []);
+};
+
+window.importSelectedStickers = async () => {
+  if (!window._cskSelected || window._cskSelected.size === 0) { toast("未选择表情"); return; }
+  const data = window._cskData || [];
+  const existing = new Set(stickers.map(s => s.src));
+  let added = 0, skipped = 0;
+
+  window._cskSelected.forEach(id => {
+    const idx = parseInt(id.replace("csk_", ""));
+    const s = data[idx];
+    if (!s) return;
+    const src = _stickerSrc(s);
+    if (!src) return;
+    if (existing.has(src)) { skipped++; return; }
+    stickers.push({ id: "sk" + Date.now() + added, src, type: "url", shielded: false, addedAt: Date.now() });
+    existing.add(src);
+    added++;
+  });
+
+  await saveAll();
+  renderStickers();
+  closeModal();
+  toast(skipped ? `已导入 ${added} 个（跳过 ${skipped} 个重复）` : `已导入 ${added} 个`);
+};
+
+// ═══ 字卡 JSON 导入/导出 ═══
+window.openCardJsonIO = () => {
+  modal("JSON", `<div class="pill-btn-group">
+    <button class="pill-btn" onclick="exportCardsJson()">导出 JSON</button>
+    <button class="pill-btn" onclick="document.getElementById('fpCardJson').click();closeModal();">导入 JSON</button>
+  </div>`);
+};
+
+window.exportCardsJson = () => {
+  const data = cards.map(c => ({ text: c.text, translation: c.translation || "", cat: c.cat }));
+  const json = JSON.stringify(data, null, 2);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([json], { type: "application/json;charset=utf-8" }));
+  a.download = `字卡_${Date.now()}.json`;
+  a.click();
+  closeModal();
+};
+
+function onPickCardJson(e) {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = async ev => {
+    try {
+      const data = JSON.parse(ev.target.result);
+      let parsed = [];
+      if (Array.isArray(data)) {
+        // 直接数组 [{text, translation, cat}]
+        parsed = data.map((item, i) => ({
+          id: "c" + Date.now() + i,
+          text: item.text || item.t || "",
+          translation: item.translation || item.tr || "",
+          cat: item.cat || item.category || item.group || "未命名"
+        })).filter(c => c.text);
+      } else if (data.cards && Array.isArray(data.cards)) {
+        // { cards: [...] } 包装格式
+        parsed = data.cards.map((item, i) => ({
+          id: "c" + Date.now() + i,
+          text: item.text || item.t || "",
+          translation: item.translation || item.tr || "",
+          cat: item.cat || item.category || item.group || "未命名"
+        })).filter(c => c.text);
+      } else if (data.groups && Array.isArray(data.groups)) {
+        // { groups: [{cat, items:["句子","句子 翻译 译文"]}] } 云端格式
+        parsed = [];
+        data.groups.forEach(g => {
+          (g.items || []).forEach((line, i) => {
+            const m = line.match(/^(.+?)\s*翻译\s*(.+)$/);
+            if (m) parsed.push({ id: "c" + Date.now() + parsed.length, text: m[1].trim(), translation: m[2].trim(), cat: g.cat });
+            else parsed.push({ id: "c" + Date.now() + parsed.length, text: line.trim(), translation: "", cat: g.cat });
+          });
+        });
+      } else {
+        throw new Error("无法识别的 JSON 结构");
+      }
+      if (!parsed.length) { toast("JSON 中无有效数据", "warn"); return; }
+      await importWithMergePrompt(parsed);
+    } catch (e) {
+      toast("JSON 解析失败: " + e.message, "warn");
+      console.error(e);
+    }
+  };
+  r.readAsText(f);
+}
+
+// ─── 更新 TXT/JSON IO 弹窗 ───
+window.openTxtIO = () => {
+  modal("导入/导出", `<div class="pill-btn-group">
+    <button class="pill-btn" onclick="exportCards()">导出 TXT</button>
+    <button class="pill-btn" onclick="document.getElementById('fpCard').click();closeModal();">导入 TXT</button>
+    <button class="pill-btn" onclick="exportCardsJson()">导出 JSON</button>
+    <button class="pill-btn" onclick="document.getElementById('fpCardJson').click();closeModal();">导入 JSON</button>
+  </div>`);
 };
 
 // ─── Welcome ───
