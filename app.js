@@ -363,14 +363,14 @@ function applyCustomFont(){
       ? cfg.customFontCss
       : `@import url("${cfg.customFontCss}");`;
   }
-  el.innerHTML=css;
+  el.textContent=css;
   const fontVar=cfg.customFont ? `${cfg.customFont},"Songti SC","SimSun",serif` : `"Songti SC","SimSun","STSong",serif`;
   document.documentElement.style.setProperty("--font",fontVar);
 }
 function applyCustomBubble(){
   const raw=(cfg.customBubble||"").trim();
   const el=document.getElementById("user-bubble");
-  if(!raw){ el.innerHTML=""; return; }
+  if(!raw){ el.textContent=""; return; }
   // 若粘贴的是带 { } 的完整规则（如 .message-sent{...} / .message::after{...}），原样注入；
   // 否则视为纯属性声明（如 background:red;border-radius:8px;）。
   // 注意：旧版回退选择器只包了一层 ".bubble{}"，特异度低于内置的
@@ -378,11 +378,12 @@ function applyCustomBubble(){
   // 导致背景色、圆角等关键属性始终被内置规则盖掉——这正是
   // "明明设置了气泡却没有变化" 的根因。这里改用 #chatApp 前缀（ID 选择器）
   // 把特异度抬高到内置规则之上，无需用户自己写 !important 也能生效。
-  el.innerHTML = raw.includes("{")
+  // ⚠ 使用 textContent 替代 innerHTML 防止 CSS 注入 / XSS
+  el.textContent = raw.includes("{")
     ? raw
     : `#chatApp .row.self .bubble, #chatApp .row.opp .bubble, #chatApp .bubble { ${raw} }`;
 }
-function applyCustomChatCss(){ document.getElementById("user-chat-css").innerHTML=cfg.customChatCss||""; }
+function applyCustomChatCss(){ document.getElementById("user-chat-css").textContent=cfg.customChatCss||""; }
 function applyChatBg(){
   const app=document.getElementById("chatApp");
   const layer=document.getElementById("chatBgLayer");
@@ -482,7 +483,7 @@ function bindImageInteractions(){
   const handler={
     start(ev){ const el=ev.target.closest("[data-img]"); if(!el||el.closest(".row")) return; target=el; isLong=false; const t=ev.touches?ev.touches[0]:ev; startX=t.clientX; startY=t.clientY; pressTimer=setTimeout(()=>{ isLong=true; uploadImg(target.dataset.img); },420); },
     move(ev){ if(!pressTimer) return; const t=ev.touches?ev.touches[0]:ev; if(Math.abs(t.clientX-startX)>8||Math.abs(t.clientY-startY)>8){clearTimeout(pressTimer);pressTimer=null;} },
-    end(){ if(pressTimer) clearTimeout(pressTimer); pressTimer=null; if(!isLong&&target) uploadImg(target.dataset.img); target=null; }
+    end(){ if(pressTimer) clearTimeout(pressTimer); pressTimer=null; target=null; }
   };
   document.body.addEventListener("mousedown",handler.start);
   document.body.addEventListener("touchstart",handler.start,{passive:true});
@@ -746,13 +747,15 @@ window.requestOppTimeChange=()=>{
   if(btn){btn.disabled=true;btn.style.opacity=".35";}
   if(status)status.innerText="等待回应中…";
   setTimeout(async()=>{
-    const ok=Math.random()>0.38;
-    if(ok){
-      cfg.oppTime=genOppTime(); cfg.oppTimeSetAt=Date.now(); await saveAll(); renderChats(); closeModal(); toast("对方同意了");
-    }else{
-      if(status)status.innerText="对方拒绝了";
-      if(btn){btn.disabled=false;btn.style.opacity="";btn.innerText="再试一次";}
-    }
+    try {
+      const ok=Math.random()>0.38;
+      if(ok){
+        cfg.oppTime=genOppTime(); cfg.oppTimeSetAt=Date.now(); await saveAll(); renderChats(); closeModal(); toast("对方同意了");
+      }else{
+        if(status)status.innerText="对方拒绝了";
+        if(btn){btn.disabled=false;btn.style.opacity="";btn.innerText="再试一次";}
+      }
+    } catch(e) { if(status)status.innerText="出错了"; if(btn){btn.disabled=false;btn.style.opacity="";} }
   },1300+Math.random()*900);
 };
 
@@ -1155,6 +1158,7 @@ window.playMiniMaxTTS = async (text) => {
         audio_setting: { sample_rate: 32000, bitrate: 128000, format: "mp3", channel: 1 }
       })
     });
+    if (!response.ok) { toast(`合成失败：HTTP ${response.status}`, "warn"); return; }
     const resJson = await response.json();
 
     if (resJson.base_resp && resJson.base_resp.status_code !== 0) {
@@ -2168,11 +2172,10 @@ function toast(t, type = "default") {
 function setDockActive(id){ document.querySelectorAll(".dock-btn").forEach(b=>b.classList.toggle("active",b.dataset.app===id)); }
 window.openApp = id=>{
   const el=document.getElementById(id); if(!el) return;
-  // ⚡ 先关闭之前活跃的 app，避免多个 app 同时叠加
-  if(currentApp && currentApp !== id){
-    const prev=document.getElementById(currentApp);
-    if(prev) prev.classList.remove("active");
-  }
+  // ⚡ 先关闭所有 app，避免多个 app 同时叠加或残留 active 拦截点击
+  document.querySelectorAll(".app.active").forEach(app => app.classList.remove("active"));
+  // ⚡ 关闭可能残留的弹窗，防止遮罩层阻挡新 app 的交互
+  document.getElementById("modal").classList.remove("on");
   el.classList.add("active"); currentApp=id; setDockActive(id);
   if(id==="cardsApp")      { window.renderCards(); window.renderStickers(); }
   if(id==="groupApp")      window.renderMembers();
@@ -2294,9 +2297,9 @@ function updateCloudStatus(msg) {
 // ─── 后台预加载曲库（首页加载后 3s 空闲时触发）───
 function _backgroundPreload() {
   if (_cloudPreloadDone) return;
-  setTimeout(async () => {
+  setTimeout(() => {
     if (cloudSongCache && cloudSongCache.length) { _cloudPreloadDone = true; return; }
-    try { await fetchCloudIndex(); _cloudPreloadDone = true; } catch(e) {}
+    try { fetchCloudIndex().then(() => { _cloudPreloadDone = true; }).catch(() => {}); } catch(e) {}
   }, 3000);
 }
 
@@ -3619,9 +3622,11 @@ function applyCustomHomeStyles() {
       }
     });
   }
-  if (styleEl) styleEl.innerHTML = css;
+  if (styleEl) styleEl.textContent = css;
 
   // JS（沙盒执行，报错不崩溃）
+  // ⚠ 安全警告：以下 new Function 允许执行任意 JavaScript 代码，仅用于受信任的配置来源。
+  // 请勿执行来源不明的 customHomeJs 脚本，否则存在 XSS 攻击风险。
   if (cfg.customHomeJs) {
     try { new Function(cfg.customHomeJs)(); } catch(e) { toast("JS 错误：" + e.message); }
   }
