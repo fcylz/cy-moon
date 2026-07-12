@@ -6,6 +6,7 @@ window.DEFAULTS = {
     layout:1, theme:"light", fontSize:13, chatFontSize:13,
     delayMin:2, delayMax:5, typingText:"", ignoreOn:false, quoteOn:true,
     sentenceJoin:true, activeSend:false, activeMin:5, activeMax:20, nextActiveAt:0,
+    replyProb:60, // ⭐ 用户发消息后彼自动回复的概率（0-100），默认60%
     popupOn:true, notifOn:false, soundOn:true, showAvatar:true, showName:true,
     showTime:true, showRead:true, showSelfRead:false, showSelfName:false,readText:"",
     customFont:"", customFontCss:"", customBubble:"", customChatCss:"",
@@ -325,6 +326,11 @@ document.querySelectorAll(".stheme-opt[data-theme]").forEach(el =>
   if (dMaxEl) dMaxEl.value = cfg.delayMax;
   if (aMinEl) aMinEl.value = cfg.activeMin;
   if (aMaxEl) aMaxEl.value = cfg.activeMax;
+  // ⭐ 同步回复概率滑块
+  const rpEl = document.getElementById("replyProb");
+  if (rpEl) rpEl.value = cfg.replyProb ?? 60;
+  const rpVal = document.getElementById("replyProbVal");
+  if (rpVal) rpVal.innerText = (cfg.replyProb ?? 60) + "%";
   const muEl = document.getElementById("cfg_musicUrl");
   if(muEl) muEl.value = cfg.musicUrl || "";
   // sync active sound display
@@ -643,8 +649,8 @@ async function notify(text,name,avatar){
     // 会抛出 "Illegal constructor" 而被原来的 catch{} 静默吞掉——
     // 必须通过 Service Worker 派发才能在安卓 / 大多数移动端正常显示通知。
     const reg=_swReg||(navigator.serviceWorker&&await navigator.serviceWorker.getRegistration());
-    if(reg&&reg.showNotification){ await reg.showNotification(name||"温语",opts); return; }
-    new Notification(name||"温语",opts);
+    if(reg&&reg.showNotification){ await reg.showNotification(name||"ta",opts); return; }
+    new Notification(name||"ta",opts);
   }catch{}
 }
 
@@ -759,13 +765,16 @@ function bindMosaicLongPress(){ const w=document.getElementById("mosaicWidget");
 // down and rebuilding every bubble each time (which was the cause of the visible
 // "jump"/flash on every send, and needless work on long chats).
 let renderedMsgCount=0, renderedLastDate="";
+// ⭐ 聊天分页：长聊天记录不再一次性全部渲染，而是分批加载，解决卡顿问题
+const CHAT_PAGE_SIZE = 80;     // 每页显示条数
+let chatRenderStart = 0;       // 当前渲染窗口起始索引（0=显示全部）
 
 function buildChatCtx(){
   return {
     showAv: cfg.showAvatar, showRead: cfg.showRead, showSelfRead: cfg.showSelfRead,
     selfName: cfg.showSelfName, showTime: cfg.showTime, withSec: cfg.timeShowSeconds,
     selfNm: texts.l1_name||texts.l2_name||"我",
-    oppNm: texts.opp_name||"温语",
+    oppNm: texts.opp_name||"ta",
     readTxt: cfg.readText||"已阅",
     selfAv: imgs.selfAvatar||window.DEFAULTS.PH_SVG,
     oppAv: imgs.oppAvatar||window.DEFAULTS.PH_SVG,
@@ -790,7 +799,8 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   if(ctx.showTime&&m.time&&(isSelf||!cfg.oppCustomTime)) timeStr=ctx.withSec&&m.timeWithSec?m.timeWithSec:m.time;
   const isAvStyle=cfg.chatStyle===2||cfg.chatStyle===4;
   const showOppTime=ctx.showTime&&!isSelf&&cfg.oppCustomTime&&!!cfg.oppTime;
-  const oppTimeVal=showOppTime?getOppDisplayTime():"";
+  // ⭐ 优先用消息存储的虚拟时钟值，旧消息无此字段则fallback到实时时钟
+  const oppTimeVal=showOppTime?(m.oppTimeVal||getOppDisplayTime()):"";
   const oppTimeSpan=showOppTime?`<span class="opp-time-val" onclick="event.stopPropagation();openOppTimeModal()">${oppTimeVal}</span>`:"";
   // av-meta items (shown below avatar in styles 2 & 4)
   const avItems=[];
@@ -827,12 +837,25 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
 
 // Full rebuild — used whenever messages were reordered/edited/removed/imported,
 // or display settings that affect every row (avatar/time/name visibility) changed.
-function renderChats(){
+// ⭐ 支持分页加载：初始只渲染最近 CHAT_PAGE_SIZE 条，点击"加载更早消息"展开更多
+function renderChats(resetPage = true){
   const f=document.getElementById("chatFlow"); if(!f) return;
+  if(resetPage) chatRenderStart = Math.max(0, chats.length - CHAT_PAGE_SIZE);
   const ctx=buildChatCtx();
   const frag=document.createDocumentFragment();
   const lastDateRef={v:""};
-  chats.forEach((m,idx)=>buildMsgInto(frag,m,idx,ctx,lastDateRef));
+
+  // ⭐ 顶部"加载更早消息"按钮
+  if(chatRenderStart > 0){
+    const loadMore = document.createElement("div");
+    loadMore.className = "msgs-load-more";
+    loadMore.innerHTML = `<button onclick="loadMoreChats()">↑ 加载更早的消息（剩余 ${chatRenderStart} 条）</button>`;
+    frag.appendChild(loadMore);
+  }
+
+  for(let idx=chatRenderStart; idx<chats.length; idx++){
+    buildMsgInto(frag,chats[idx],idx,ctx,lastDateRef);
+  }
   f.innerHTML="";
   f.appendChild(frag);
   f.scrollTop=f.scrollHeight;
@@ -840,10 +863,45 @@ function renderChats(){
   unreadCount=0; updateScrollBot();
 }
 
+// ⭐ 加载更早消息：保持当前滚动位置，向前展开一页
+window.loadMoreChats = () => {
+  const f = document.getElementById("chatFlow"); if(!f) return;
+  const prevDistToBottom = f.scrollHeight - f.scrollTop;
+  const oldStart = chatRenderStart;
+  chatRenderStart = Math.max(0, oldStart - CHAT_PAGE_SIZE);
+  // 如果已经到头了就直接渲染
+  if(chatRenderStart === oldStart) return;
+
+  // 记录渲染窗口变化，不重置页码
+  const ctx=buildChatCtx();
+  const frag=document.createDocumentFragment();
+  const lastDateRef={v:""};
+
+  // 更早的"加载更多"按钮（如果还有）
+  if(chatRenderStart > 0){
+    const loadMore = document.createElement("div");
+    loadMore.className = "msgs-load-more";
+    loadMore.innerHTML = `<button onclick="loadMoreChats()">↑ 加载更早的消息（剩余 ${chatRenderStart} 条）</button>`;
+    frag.appendChild(loadMore);
+  }
+
+  for(let idx=chatRenderStart; idx<chats.length; idx++){
+    buildMsgInto(frag,chats[idx],idx,ctx,lastDateRef);
+  }
+  f.innerHTML="";
+  f.appendChild(frag);
+  renderedLastDate=lastDateRef.v;
+  // ⭐ 恢复滚动位置：新内容在顶部，保持用户看到的内容不变
+  const newDist = f.scrollHeight - prevDistToBottom;
+  f.scrollTop = Math.max(0, newDist);
+  updateScrollBot();
+};
+
 // Incremental append — used on ordinary new-message events (send / reply / sticker).
 // Only builds DOM for the messages added since the last render, and only
 // autoscrolls if the user was already at (or near) the bottom, so the view
 // doesn't visibly jerk on every message the way a full rebuild does.
+// ⭐ 兼容分页：renderedMsgCount 始终等于 chats.length（窗口覆盖到末尾），新增消息直接追加
 function appendNewChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
   if(renderedMsgCount===0||renderedMsgCount>chats.length){ renderChats(); return; }
@@ -1165,6 +1223,11 @@ window.sendMsg = async()=>{
   const _sb=document.querySelector('.input-style-1:not(.hidden) .in-btn.send,.input-style-2:not(.hidden) .i2-send,.input-style-3:not(.hidden) .i3-send:not(.alt),.input-style-4:not(.hidden) .i4-send:not(.alt)');
   if(_sb){_sb.classList.add('sent-flash');setTimeout(()=>_sb.classList.remove('sent-flash'),400);}
   await saveAll(); appendNewChats(); getActiveInput()?.focus();
+  // ⭐ 用户发消息后，彼按概率自动回复（replyProb: 0-100，默认60%）
+  // 若已有回复/主动发送在进行中则不重复触发
+  if(!replyTimer && !typingNode && Math.random() * 100 < (cfg.replyProb ?? 60)){
+    scheduleReply(/*isAuto=*/true);
+  }
 };
 
 // ─── Reply ───
@@ -1176,9 +1239,12 @@ function showHomeTypingBar(on){
   if(txt) txt.textContent=cfg.typingText||"正在输入";
   bar.classList.toggle("active",on);
 }
-function scheduleReply(){
+// ⭐ isAuto=true 表示这是用户发消息后自动触发的回复（非手动点击语音按钮）
+// 自动触发不走 ignoreOn"已读不回"提示，避免静默时弹出无关toast
+function scheduleReply(isAuto = false){
   if(replyTimer||typingNode) return;
-  if(cfg.ignoreOn && Math.random() < 0.5) {
+  // 仅手动点击时走"已读不回"逻辑，自动回复不弹出"未回复"提示
+  if(!isAuto && cfg.ignoreOn && Math.random() < 0.5) {
     toast("未回复");
     return;}
   const sec=randInt(cfg.delayMin,cfg.delayMax);
@@ -1202,9 +1268,10 @@ async function fireReply(){
     const stickerPool=stickers.filter(s=>!s.shielded);
     if(stickerPool.length && Math.random()*100<STICKER_CHANCE){
       const stk=stickerPool[Math.floor(Math.random()*stickerPool.length)];
-      let nameS=texts.opp_name||"温语", avatarS=imgs.oppAvatar||"";
+      let nameS=texts.opp_name||"ta", avatarS=imgs.oppAvatar||"";
       if(cfg.groupMode&&groupMembers.length){ const ms=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameS=ms.name; avatarS=ms.avatar||window.DEFAULTS.PH_SVG; }
-      chats.push({sender:"opp",text:"[表情包]",sticker:true,stickerId:stk.id,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameS,avatar:avatarS});
+      // ⭐ 记录彼时虚拟时钟值，避免所有历史消息显示同一个实时时钟
+      chats.push({sender:"opp",text:"[表情包]",sticker:true,stickerId:stk.id,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameS,avatar:avatarS,oppTimeVal:cfg.oppCustomTime&&cfg.oppTime?getOppDisplayTime():""});
       await saveAll();
       if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
       else { if(cfg.popupOn) showPopup("[表情包]",nameS,avatarS); }
@@ -1228,11 +1295,12 @@ async function fireReply(){
     if(cfg.sentenceJoin&&arr.length>1){ const usedSeps=new Set(); function pickUniqSep(){ let s,tries=0; do{s=randomSep();tries++;}while(usedSeps.has(s)&&tries<SEP_POOL.length); usedSeps.add(s); return s; } let joined=arr[0]; for(let si=1;si<arr.length;si++) joined+=pickUniqSep()+arr[si]; text=joined; if(transArr.length){ let tjoin=transArr[0]; for(let si=1;si<transArr.length;si++) tjoin+=pickUniqSep()+transArr[si]; trans=tjoin; } }
     else if(arr.length>1){
       // 连句关闭：每条单独推入 chats，最后一条走正常流程
-      let name2=texts.opp_name||"温语", avatar2=imgs.oppAvatar||"";
+      let name2=texts.opp_name||"ta", avatar2=imgs.oppAvatar||"";
       if(cfg.groupMode&&groupMembers.length){ const m2=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name2=m2.name; avatar2=m2.avatar||window.DEFAULTS.PH_SVG; }
       for(let fi=0;fi<arr.length-1;fi++){
         const nt=new Date(now.getTime()+fi*500);
-        chats.push({sender:"opp",text:arr[fi],translation:transArr[fi]||"",time:fmtTime(nt),timeWithSec:fmtTime(nt,true),date:fmtDate(nt),ts:nt.getTime(),lyric:false,quote:"",name:name2,avatar:avatar2,fragments:[arr[fi]]});
+        // ⭐ 记录虚拟时钟值
+        chats.push({sender:"opp",text:arr[fi],translation:transArr[fi]||"",time:fmtTime(nt),timeWithSec:fmtTime(nt,true),date:fmtDate(nt),ts:nt.getTime(),lyric:false,quote:"",name:name2,avatar:avatar2,fragments:[arr[fi]],oppTimeVal:cfg.oppCustomTime&&cfg.oppTime?getOppDisplayTime():""});
       }
       text=arr[arr.length-1]; trans=transArr[arr.length-1]||"";
     }
@@ -1240,9 +1308,10 @@ async function fireReply(){
   }
   let quote="";
   if(!isLyric&&cfg.quoteOn&&Math.random()<0.3){ const my=chats.filter(c=>c.sender==="self").slice(-10); if(my.length) quote=my[Math.floor(Math.random()*my.length)].text; }
-  let name=texts.opp_name||"温语", avatar=imgs.oppAvatar||"";
+  let name=texts.opp_name||"ta", avatar=imgs.oppAvatar||"";
   if(cfg.groupMode&&groupMembers.length){ const m=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name=m.name; avatar=m.avatar||window.DEFAULTS.PH_SVG; }
-  chats.push({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,avatar,fragments});
+  // ⭐ 记录虚拟时钟值：每条对方消息锁定彼时的钟表读数
+  chats.push({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,avatar,fragments,oppTimeVal:cfg.oppCustomTime&&cfg.oppTime?getOppDisplayTime():""});
   await saveAll();
   if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
   else { if(cfg.popupOn) showPopup(text,name,avatar); }
@@ -1571,18 +1640,58 @@ window.addStickersFromUrls = async () => {
   toast(skipped?`已添加 ${added} 个（跳过 ${skipped} 个重复）`:`已添加 ${added} 个`);
 };
 window.triggerStickerPick = () => { closeModal(); const i=document.getElementById("fpSticker"); i.value=""; i.click(); };
+// ⭐ 图片压缩存储：限制最大宽度400px+JPEG质量0.6，将base64体积从数MB降低到~50KB
+function _compressStickerImage(file) {
+  return new Promise((resolve) => {
+    // GIF/PNG小文件直接原样存储，避免压缩反而变大
+    if (file.size < 50000) {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => resolve(null);
+      r.readAsDataURL(file);
+      return;
+    }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const MAX_W = 400;
+      let w = img.width, h = img.height;
+      if (w <= MAX_W) {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => resolve(null);
+        r.readAsDataURL(file);
+        return;
+      }
+      h = Math.round(h * (MAX_W / w));
+      w = MAX_W;
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      resolve(canvas.toDataURL('image/jpeg', 0.6));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url);
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => resolve(null);
+      r.readAsDataURL(file);
+    };
+    img.src = url;
+  });
+}
 function onPickSticker(e){
   const fs=Array.from(e.target.files); if(!fs.length) return;
   let done=0;
   fs.forEach((f,i)=>{
-    const r=new FileReader();
-    r.onload=async ev=>{
-      stickers.push({id:"sk"+Date.now()+i, src:ev.target.result, type:"upload", shielded:false, addedAt:Date.now()});
+    // ⭐ 压缩图片后再存储
+    _compressStickerImage(f).then(data => {
+      if (!data) { done++; return; }
+      stickers.push({id:"sk"+Date.now()+i, src:data, type:"upload", shielded:false, addedAt:Date.now()});
       done++;
-      if(done===fs.length){ await saveAll(); window.renderStickers(); toast(`已添加 ${fs.length} 个`); }
-    };
-    r.onerror=()=>{ done++; toast("格式不支持: "+f.name,"warn"); };
-    r.readAsDataURL(f);
+      if(done===fs.length){ saveAll(); window.renderStickers(); toast(`已添加 ${fs.length} 个`); }
+    });
   });
 }
 function resolveStickerSrc(id){ const s=stickers.find(x=>x.id===id); return s?s.src:window.DEFAULTS.PH_SVG; }
@@ -1880,11 +1989,13 @@ function tally(arr){ const m={}; arr.forEach(t=>{if(!t)return;m[t]=(m[t]||0)+1;}
 
 // ─── Backup ───
 window.openBackup = ()=>{ modal("数据",`<div class="pill-btn-group"><button class="pill-btn" onclick="fullExport()">导出备份</button><button class="pill-btn" onclick="document.getElementById('fpJson').click();closeModal();">导入备份</button></div>`); };
-window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
+// ⭐ 完整备份：含问卷、问卷记录、表情包（之前遗漏导致还原丢失数据）
+window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds,surveys,surveyRecords,stickers}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
+// ⭐ 完整还原：含问卷、问卷记录、表情包（与 fullExport 对应）
 function onPickJson(e){
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) chats=d.chats; if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); renderCarousel(); renderMosaic();  toast("还原完毕"); }catch{ alert("数据损坏"); } };
+  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) chats=d.chats; if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; if(d.surveys) surveys=d.surveys; if(d.surveyRecords) surveyRecords=d.surveyRecords; if(d.stickers) stickers=d.stickers; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderStickers(); window.renderMembers(); renderCarousel(); renderMosaic(); renderSurveys(); toast("还原完毕"); }catch{ alert("数据损坏"); } };
   r.readAsText(f);
 }
 window.factoryReset = async()=>{ if(!confirm("确认销毁并重置？")) return; indexedDB.deleteDatabase(DB_NAME); setTimeout(()=>location.reload(),200); };

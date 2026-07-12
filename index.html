@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>幸逢</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="https://i.postimg.cc/281KzSNY/IMG-3531.jpg">
@@ -862,6 +862,14 @@
             <div class="stoggle-row">
               <span>主动发送</span>
               <div class="sw" id="sw_activeSend" onclick="cfgToggle('activeSend')"><div class="sw-indicator"></div></div>
+            </div>
+          </div>
+          <!-- ⭐ 用户发消息后彼自动回复的概率 -->
+          <div class="sinput-row" style="margin-top:10px;">
+            <span class="sinput-label">回复概率（%）</span>
+            <div class="range-pair" style="align-items:center;">
+              <input class="inp sm" type="range" id="replyProb" min="0" max="100" step="5" value="60" oninput="document.getElementById('replyProbVal').innerText=this.value+'%';cfgSet('replyProb',+this.value)" style="width:100%;">
+              <span id="replyProbVal" style="min-width:36px;text-align:right;font-size:calc(var(--fs)*.75);color:var(--text-mute);">60%</span>
             </div>
           </div>
           <div class="sinput-row" style="margin-top:10px;">
