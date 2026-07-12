@@ -436,6 +436,15 @@ window.setChatStyle = async v => {
   document.querySelectorAll(".cs-card").forEach(el =>
     el.classList.toggle("active", +el.dataset.s === cfg.chatStyle)
   );
+  document.querySelectorAll('input[name="cs"]').forEach(r => { r.checked = +r.value === cfg.chatStyle; });
+  // ⚡ 切换布局后若聊天已打开，滚动到底部并聚焦输入框
+  if(currentApp === "chatApp") {
+    requestAnimationFrame(() => {
+      const f = document.getElementById("chatFlow");
+      if(f && f.lastElementChild) f.lastElementChild.scrollIntoView({ block:"end", behavior:"instant" });
+      getActiveInput()?.focus();
+    });
+  }
 };
 
 window.toggleNotif    = async()=>{
