@@ -2,10 +2,9 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,minimum-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>幸逢</title>
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="https://i.postimg.cc/281KzSNY/IMG-3531.jpg">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="style.css">
@@ -43,14 +42,14 @@
       请输入解密钥匙以开启。
       <span class="warning-text">※ 请勿向他人公开或泄露钥匙，一经发现将立即更换。频繁泄露将停止分享，请理解与配合。</span>
     </div>
-    <form class="lock-input-wrap" onsubmit="checkLock();return false;">
+    <div class="lock-input-wrap">
       <input type="password" id="lockInput" class="lock-input" placeholder="Enter key..." onkeydown="if(event.key==='Enter')checkLock()">
       <button class="lock-btn-submit" onclick="checkLock()">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="9 18 15 12 9 6"/>
         </svg>
       </button>
-    </form>
+    </div>
     <div id="lockError" class="lock-error"></div>
   </div>
 </div>
@@ -138,13 +137,13 @@
             <div class="m-title editable" data-key="l1_song" placeholder="未定义"></div>
             <div class="m-sub editable" data-key="l1_artist" placeholder="未定义"></div>
           </div>
-          <div class="m-lrc" id="mCardLrc"><span class="m-lrc-text"></span></div>
           <div class="m-right">
+            <div class="m-lrc-line" id="mCardLrcText"></div>
             <div class="m-eq" id="musicEq"><span></span><span></span><span></span><span></span></div>
-            <button class="music-next-btn" id="musicNextBtn" onclick="event.stopPropagation();musicNext()" title="下一首">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="4 4 17 12 4 20 4 4"/><line x1="20" y1="5" x2="20" y2="19"/></svg>
+            <button class="music-next-btn" onclick="musicNext();event.stopPropagation()" title="下一首">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="4 4 17 12 4 20 4 4"/><line x1="20" y1="5" x2="20" y2="19"/></svg>
             </button>
-            <button class="play-btn" id="musicPlay" onclick="event.stopPropagation()">
+            <button class="play-btn" id="musicPlay">
               <svg viewBox="0 0 24 24"><g id="playIcon"><polygon points="5 4 21 12 5 20 5 4" fill="currentColor"/></g></svg>
             </button>
           </div>
@@ -404,7 +403,7 @@
     </div>
 
     <div class="search-pane" id="searchPane">
-      <input id="chatSearch" placeholder="…" oninput="doSearchChatDebounced()">
+      <input id="chatSearch" placeholder="…" oninput="doSearchChat()">
       <div class="res" id="searchRes"></div>
     </div>
 
@@ -550,7 +549,7 @@
         <div class="cards-toolbar">
           <div class="search-bar">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input id="cardSearch" placeholder="…" oninput="renderCardsDebounced()">
+            <input id="cardSearch" placeholder="…" oninput="renderCards()">
           </div>
         </div>
         <div class="deck" id="cardDeck"></div>
@@ -869,7 +868,6 @@
               <div class="sw" id="sw_activeSend" onclick="cfgToggle('activeSend')"><div class="sw-indicator"></div></div>
             </div>
           </div>
-          <!-- ⭐ 用户发消息后彼自动回复的概率 -->
           <div class="sinput-row" style="margin-top:10px;">
             <span class="sinput-label">回复概率（%）</span>
             <div class="range-pair" style="align-items:center;">
@@ -1412,7 +1410,6 @@ document.getElementById('settingsApp').addEventListener('transitionend', functio
   document.querySelectorAll('input[name="cs"]').forEach(r => { r.checked = +r.value === cfg.chatStyle; });
 });
 </script>
-
 <!-- ═══ 音乐播放窗口 ═══ -->
 <div class="music-player" id="musicPlayer">
   <div class="mp-mask" onclick="closeMusicPlayer()"></div>
@@ -1427,6 +1424,12 @@ document.getElementById('settingsApp').addEventListener('transitionend', functio
       <div class="mp-title" id="mpTitle">未选择</div>
       <div class="mp-artist" id="mpArtist">—</div>
       <div class="mp-count" id="mpCount"></div>
+    </div>
+    <!-- 播放进度 -->
+    <div class="mp-progress-wrap">
+      <span class="mp-time" id="mpCurTime">00:00</span>
+      <input class="mp-progress" id="mpProgress" type="range" min="0" max="100" value="0" step="0.1" oninput="mpSeek(this.value)" onchange="mpSeek(this.value)">
+      <span class="mp-time" id="mpDurTime">00:00</span>
     </div>
     <!-- 歌词区 -->
     <div class="mp-lrc-wrap">
@@ -1451,4 +1454,3 @@ document.getElementById('settingsApp').addEventListener('transitionend', functio
 
 </body>
 </html>
-

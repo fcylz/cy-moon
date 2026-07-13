@@ -6,7 +6,7 @@ window.DEFAULTS = {
     layout:1, theme:"light", fontSize:13, chatFontSize:13,
     delayMin:2, delayMax:5, typingText:"", ignoreOn:false, quoteOn:true,
     sentenceJoin:true, activeSend:false, activeMin:5, activeMax:20, nextActiveAt:0,
-    replyProb:60, // ⭐ 用户发消息后彼自动回复的概率（0-100），默认60%
+    replyProb:60, // 用户发消息后彼自动回复的概率（0-100），默认60%
     popupOn:true, notifOn:false, soundOn:true, showAvatar:true, showName:true,
     showTime:true, showRead:true, showSelfRead:false, showSelfName:false,readText:"",
     customFont:"", customFontCss:"", customBubble:"", customChatCss:"",
@@ -88,7 +88,7 @@ if ("serviceWorker" in navigator) {
     .then(reg => { _swReg = reg; })
     .catch(() => {});
 }
-let ctxTargetIdx=-1, unreadCount=0, popupTimer=null;
+let ctxTargetIdx=-1, musicAudio=null, unreadCount=0, popupTimer=null;
 let imgPickKey="", memberPickIdx=-1, isBatchSelecting=false;
 let cardsActiveTab="cards", isStickerBatchSelecting=false, stickerSelected=[];
 let cloudSongCache=null, cloudCardCache=null, cloudStickerCache=null; // 云端数据内存缓存
@@ -197,11 +197,11 @@ async function init() {
   bindFilePickers();
   bindChatScroll();
   bindMusicPlayer();
+  _backgroundPreload();
   bindGlobalClose();
   bindPopup();
   bindMosaicLongPress();
   syncUI();
-  _backgroundPreload();
   initWelcomeParticles();
   renderChats();
   renderCarousel();
@@ -327,7 +327,6 @@ document.querySelectorAll(".stheme-opt[data-theme]").forEach(el =>
   if (dMaxEl) dMaxEl.value = cfg.delayMax;
   if (aMinEl) aMinEl.value = cfg.activeMin;
   if (aMaxEl) aMaxEl.value = cfg.activeMax;
-  // ⭐ 同步回复概率滑块
   const rpEl = document.getElementById("replyProb");
   if (rpEl) rpEl.value = cfg.replyProb ?? 60;
   const rpVal = document.getElementById("replyProbVal");
@@ -363,14 +362,14 @@ function applyCustomFont(){
       ? cfg.customFontCss
       : `@import url("${cfg.customFontCss}");`;
   }
-  el.textContent=css;
+  el.innerHTML=css;
   const fontVar=cfg.customFont ? `${cfg.customFont},"Songti SC","SimSun",serif` : `"Songti SC","SimSun","STSong",serif`;
   document.documentElement.style.setProperty("--font",fontVar);
 }
 function applyCustomBubble(){
   const raw=(cfg.customBubble||"").trim();
   const el=document.getElementById("user-bubble");
-  if(!raw){ el.textContent=""; return; }
+  if(!raw){ el.innerHTML=""; return; }
   // 若粘贴的是带 { } 的完整规则（如 .message-sent{...} / .message::after{...}），原样注入；
   // 否则视为纯属性声明（如 background:red;border-radius:8px;）。
   // 注意：旧版回退选择器只包了一层 ".bubble{}"，特异度低于内置的
@@ -378,12 +377,11 @@ function applyCustomBubble(){
   // 导致背景色、圆角等关键属性始终被内置规则盖掉——这正是
   // "明明设置了气泡却没有变化" 的根因。这里改用 #chatApp 前缀（ID 选择器）
   // 把特异度抬高到内置规则之上，无需用户自己写 !important 也能生效。
-  // ⚠ 使用 textContent 替代 innerHTML 防止 CSS 注入 / XSS
-  el.textContent = raw.includes("{")
+  el.innerHTML = raw.includes("{")
     ? raw
     : `#chatApp .row.self .bubble, #chatApp .row.opp .bubble, #chatApp .bubble { ${raw} }`;
 }
-function applyCustomChatCss(){ document.getElementById("user-chat-css").textContent=cfg.customChatCss||""; }
+function applyCustomChatCss(){ document.getElementById("user-chat-css").innerHTML=cfg.customChatCss||""; }
 function applyChatBg(){
   const app=document.getElementById("chatApp");
   const layer=document.getElementById("chatBgLayer");
@@ -437,15 +435,6 @@ window.setChatStyle = async v => {
   document.querySelectorAll(".cs-card").forEach(el =>
     el.classList.toggle("active", +el.dataset.s === cfg.chatStyle)
   );
-  document.querySelectorAll('input[name="cs"]').forEach(r => { r.checked = +r.value === cfg.chatStyle; });
-  // ⚡ 切换布局后若聊天已打开，滚动到底部并聚焦输入框
-  if(currentApp === "chatApp") {
-    requestAnimationFrame(() => {
-      const f = document.getElementById("chatFlow");
-      if(f && f.lastElementChild) f.lastElementChild.scrollIntoView({ block:"end", behavior:"instant" });
-      getActiveInput()?.focus();
-    });
-  }
 };
 
 window.toggleNotif    = async()=>{
@@ -483,7 +472,7 @@ function bindImageInteractions(){
   const handler={
     start(ev){ const el=ev.target.closest("[data-img]"); if(!el||el.closest(".row")) return; target=el; isLong=false; const t=ev.touches?ev.touches[0]:ev; startX=t.clientX; startY=t.clientY; pressTimer=setTimeout(()=>{ isLong=true; uploadImg(target.dataset.img); },420); },
     move(ev){ if(!pressTimer) return; const t=ev.touches?ev.touches[0]:ev; if(Math.abs(t.clientX-startX)>8||Math.abs(t.clientY-startY)>8){clearTimeout(pressTimer);pressTimer=null;} },
-    end(){ if(pressTimer) clearTimeout(pressTimer); pressTimer=null; target=null; }
+    end(){ if(pressTimer) clearTimeout(pressTimer); pressTimer=null; if(!isLong&&target) uploadImg(target.dataset.img); target=null; }
   };
   document.body.addEventListener("mousedown",handler.start);
   document.body.addEventListener("touchstart",handler.start,{passive:true});
@@ -508,9 +497,47 @@ function bindFilePickers(){
   document.getElementById("fpSnd").addEventListener("change",  onPickSnd);
   document.getElementById("fpJson").addEventListener("change", onPickJson);
   document.getElementById("fpCard").addEventListener("change", onPickCardTxt);
-  document.getElementById("fpCardJson").addEventListener("change", onPickCardJson);
   document.getElementById("fpSurvey").addEventListener("change", onPickSurvey);
   document.getElementById("fpSticker").addEventListener("change", onPickSticker);
+}
+
+// ⭐ 通用图片压缩：限制宽度+JPEG质量，大幅降低Base64体积
+function _compressImg(file, maxW = 800, quality = 0.75) {
+  return new Promise((resolve) => {
+    if (file.size < 50000) {
+      const r = new FileReader();
+      r.onload = () => resolve({ data: r.result, origSize: file.size, newSize: r.result.length });
+      r.onerror = () => resolve(null);
+      r.readAsDataURL(file);
+      return;
+    }
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let w = img.width, h = img.height;
+      if (w <= maxW && file.type !== 'image/png') {
+        const r = new FileReader();
+        r.onload = () => resolve({ data: r.result, origSize: file.size, newSize: r.result.length });
+        r.onerror = () => resolve(null);
+        r.readAsDataURL(file);
+        return;
+      }
+      if (w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      const data = canvas.toDataURL('image/jpeg', quality);
+      resolve({ data, origSize: file.size, newSize: data.length });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); const r = new FileReader(); r.onload = () => resolve({ data: r.result, origSize: file.size, newSize: r.result.length }); r.onerror = () => resolve(null); r.readAsDataURL(file); };
+    img.src = url;
+  });
+}
+// ⭐ 表情包压缩：限制最大宽度400px+JPEG质量0.6
+function _compressStickerImage(file) {
+  return _compressImg(file, 400, 0.6).then(r => r ? r.data : null);
 }
 
 async function onPickImg(e){
@@ -518,10 +545,11 @@ async function onPickImg(e){
   const result = await _compressImg(f, 1200, 0.75);
   if(!result) return;
   const data = result.data;
-  const savedMB = ((result.origSize - result.newSize) / 1024 / 1024).toFixed(2);
-  if(result.newSize < result.origSize) toast(`图片已压缩，节省约 ${savedMB}MB`);
   if(imgPickKey==="__memberAvatar__"&&memberPickIdx>-1){ groupMembers[memberPickIdx].avatar=data; await saveAll(); renderMembers(); return; }
-  if(imgPickKey==="__carousel__"){ carousel.push({id:"car"+Date.now(),data}); await saveAll(); renderCarousel(); renderCarouselManage(); return; }
+  if(imgPickKey==="__carousel__"){
+    if(carousel.length >= MAX_CAROUSEL){ toast(`轮播图已达上限 ${MAX_CAROUSEL} 张`,"warn"); return; }
+    carousel.push({id:"car"+Date.now(),data}); await saveAll(); renderCarousel(); renderCarouselManage(); return;
+  }
   if(imgPickKey==="__mosaic_new__"){ if(!imgs.mosaic) imgs.mosaic=[]; if(imgs.mosaic.length<4) imgs.mosaic.push(data); await saveAll(); renderMosaic(); return; }
   if(imgPickKey.startsWith("__mosaic_")){ const idx=parseInt(imgPickKey.split("_")[2]); if(imgs.mosaic?.[idx]!==undefined){ imgs.mosaic[idx]=data; await saveAll(); renderMosaic(); } return; }
   imgs[imgPickKey]=data; await saveAll();
@@ -531,6 +559,7 @@ async function onPickImg(e){
 
 function onPickSnd(e){
   const fs=Array.from(e.target.files); if(!fs.length) return;
+  if(sounds.length + fs.length > MAX_SOUNDS){ toast(`音效已达上限 ${MAX_SOUNDS} 个`,"warn"); return; }
   let done=0;
   fs.forEach(f=>{
     const r=new FileReader();
@@ -553,8 +582,7 @@ function onPickSnd(e){
 // ─── Sound ───
 function makeDullThud1() {
   try {
-    const c = getAudioCtx();
-    if (c.state === "suspended") c.resume();
+    const c = new (window.AudioContext || window.webkitAudioContext)();
     const o = c.createOscillator(), g = c.createGain();
     o.connect(g); g.connect(c.destination);
     o.type = "sine"; o.frequency.setValueAtTime(120, c.currentTime);
@@ -566,8 +594,7 @@ function makeDullThud1() {
 }
 function makeDullThud2() {
   try {
-    const c = getAudioCtx();
-    if (c.state === "suspended") c.resume();
+    const c = new (window.AudioContext || window.webkitAudioContext)();
     const buf = c.createBuffer(1, c.sampleRate * 0.18, c.sampleRate);
     const d = buf.getChannelData(0);
     for (let i = 0; i < d.length; i++) {
@@ -615,7 +642,7 @@ function renderSoundList(){
     playBtn.onclick = () => {
       if(s.id==="__builtin_thud1__") makeDullThud1();
       else if(s.id==="__builtin_thud2__") makeDullThud2();
-      else _pooledAudio(s.data);
+      else new Audio(s.data).play().catch(()=>{});
     };
     ops.appendChild(playBtn);
     if(!isBuiltin){
@@ -627,25 +654,14 @@ function renderSoundList(){
     c.appendChild(li);
   });
 }
-// ⚡ 共享音频池：避免频繁 new Audio() 导致内存堆积（最多复用 3 个实例）
-let _audioPool = [];
-let _audioPoolIdx = 0;
-function _pooledAudio(src) {
-  let a = _audioPool[_audioPoolIdx];
-  if (!a) { a = new Audio(); _audioPool[_audioPoolIdx] = a; }
-  _audioPoolIdx = (_audioPoolIdx + 1) % 3;
-  a.src = src;
-  a.play().catch(() => {});
-  return a;
-}
 function playSoundById(id) {
   if (id === "__builtin_thud1__") { makeDullThud1(); return; }
   if (id === "__builtin_thud2__") { makeDullThud2(); return; }
   const s = sounds.find(x => x.id === id);
-  if (s) _pooledAudio(s.data);
+  if (s) new Audio(s.data).play().catch(() => {});
   else makeDullThud1();
 }
-window.playSnd = i=>{ if(sounds[i]) _pooledAudio(sounds[i].data); };
+window.playSnd = i=>{ if(sounds[i]) new Audio(sounds[i].data).play().catch(()=>{}); };
 window.delSnd  = async i=>{ sounds.splice(i,1); await saveAll(); renderSoundList(); };
 function chime(){ playSoundById(cfg.activeSoundId || "__builtin_thud1__"); }
 window.testSound = ()=>{ playSoundById(cfg.activeSoundId || "__builtin_thud1__"); };
@@ -673,8 +689,8 @@ async function notify(text,name,avatar){
     // 会抛出 "Illegal constructor" 而被原来的 catch{} 静默吞掉——
     // 必须通过 Service Worker 派发才能在安卓 / 大多数移动端正常显示通知。
     const reg=_swReg||(navigator.serviceWorker&&await navigator.serviceWorker.getRegistration());
-    if(reg&&reg.showNotification){ await reg.showNotification(name||"ta",opts); return; }
-    new Notification(name||"ta",opts);
+    if(reg&&reg.showNotification){ await reg.showNotification(name||"温语",opts); return; }
+    new Notification(name||"温语",opts);
   }catch{}
 }
 
@@ -747,15 +763,13 @@ window.requestOppTimeChange=()=>{
   if(btn){btn.disabled=true;btn.style.opacity=".35";}
   if(status)status.innerText="等待回应中…";
   setTimeout(async()=>{
-    try {
-      const ok=Math.random()>0.38;
-      if(ok){
-        cfg.oppTime=genOppTime(); cfg.oppTimeSetAt=Date.now(); await saveAll(); renderChats(); closeModal(); toast("对方同意了");
-      }else{
-        if(status)status.innerText="对方拒绝了";
-        if(btn){btn.disabled=false;btn.style.opacity="";btn.innerText="再试一次";}
-      }
-    } catch(e) { if(status)status.innerText="出错了"; if(btn){btn.disabled=false;btn.style.opacity="";} }
+    const ok=Math.random()>0.38;
+    if(ok){
+      cfg.oppTime=genOppTime(); cfg.oppTimeSetAt=Date.now(); await saveAll(); renderChats(); closeModal(); toast("对方同意了");
+    }else{
+      if(status)status.innerText="对方拒绝了";
+      if(btn){btn.disabled=false;btn.style.opacity="";btn.innerText="再试一次";}
+    }
   },1300+Math.random()*900);
 };
 
@@ -791,16 +805,13 @@ function bindMosaicLongPress(){ const w=document.getElementById("mosaicWidget");
 // down and rebuilding every bubble each time (which was the cause of the visible
 // "jump"/flash on every send, and needless work on long chats).
 let renderedMsgCount=0, renderedLastDate="";
-// ⭐ 聊天分页：长聊天记录不再一次性全部渲染，而是分批加载，解决卡顿问题
-const CHAT_PAGE_SIZE = 80;     // 每页显示条数
-let chatRenderStart = 0;       // 当前渲染窗口起始索引（0=显示全部）
 
 function buildChatCtx(){
   return {
     showAv: cfg.showAvatar, showRead: cfg.showRead, showSelfRead: cfg.showSelfRead,
     selfName: cfg.showSelfName, showTime: cfg.showTime, withSec: cfg.timeShowSeconds,
     selfNm: texts.l1_name||texts.l2_name||"我",
-    oppNm: texts.opp_name||"ta",
+    oppNm: texts.opp_name||"温语",
     readTxt: cfg.readText||"已阅",
     selfAv: imgs.selfAvatar||window.DEFAULTS.PH_SVG,
     oppAv: imgs.oppAvatar||window.DEFAULTS.PH_SVG,
@@ -818,15 +829,14 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   }
   const isSelf=m.sender==="self";
   const row=document.createElement("div"); row.className="row "+(isSelf?"self":"opp"); row.id=`msg-row-${idx}`;
-  const av=isSelf?ctx.selfAv:(m.avatar||ctx.oppAv);
+  const av=isSelf?ctx.selfAv:(m.memberId ? ((groupMembers.find(g=>g.id===m.memberId)||{}).avatar||ctx.oppAv) : (m.avatar||ctx.oppAv));
   const nm=isSelf?ctx.selfNm:(m.name||ctx.oppNm);
   const showNm = isSelf ? ctx.selfName : cfg.showName;
   let timeStr="";
   if(ctx.showTime&&m.time&&(isSelf||!cfg.oppCustomTime)) timeStr=ctx.withSec&&m.timeWithSec?m.timeWithSec:m.time;
   const isAvStyle=cfg.chatStyle===2||cfg.chatStyle===4;
   const showOppTime=ctx.showTime&&!isSelf&&cfg.oppCustomTime&&!!cfg.oppTime;
-  // ⭐ 优先用消息存储的虚拟时钟值，旧消息无此字段则fallback到实时时钟
-  const oppTimeVal=showOppTime?(m.oppTimeVal||getOppDisplayTime()):"";
+  const oppTimeVal=showOppTime?getOppDisplayTime():"";
   const oppTimeSpan=showOppTime?`<span class="opp-time-val" onclick="event.stopPropagation();openOppTimeModal()">${oppTimeVal}</span>`:"";
   // av-meta items (shown below avatar in styles 2 & 4)
   const avItems=[];
@@ -863,71 +873,23 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
 
 // Full rebuild — used whenever messages were reordered/edited/removed/imported,
 // or display settings that affect every row (avatar/time/name visibility) changed.
-// ⭐ 支持分页加载：初始只渲染最近 CHAT_PAGE_SIZE 条，点击"加载更早消息"展开更多
-function renderChats(resetPage = true){
+function renderChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
-  if(resetPage) chatRenderStart = Math.max(0, chats.length - CHAT_PAGE_SIZE);
   const ctx=buildChatCtx();
   const frag=document.createDocumentFragment();
   const lastDateRef={v:""};
-
-  // ⭐ 顶部"加载更早消息"按钮
-  if(chatRenderStart > 0){
-    const loadMore = document.createElement("div");
-    loadMore.className = "msgs-load-more";
-    loadMore.innerHTML = `<button onclick="loadMoreChats()">↑ 加载更早的消息（剩余 ${chatRenderStart} 条）</button>`;
-    frag.appendChild(loadMore);
-  }
-
-  for(let idx=chatRenderStart; idx<chats.length; idx++){
-    buildMsgInto(frag,chats[idx],idx,ctx,lastDateRef);
-  }
+  chats.forEach((m,idx)=>buildMsgInto(frag,m,idx,ctx,lastDateRef));
   f.innerHTML="";
   f.appendChild(frag);
-  requestAnimationFrame(()=>{ f.lastElementChild?.scrollIntoView({ block:"end", behavior:"instant" }); });
+  f.scrollTop=f.scrollHeight;
   renderedMsgCount=chats.length; renderedLastDate=lastDateRef.v;
   unreadCount=0; updateScrollBot();
 }
-
-// ⭐ 加载更早消息：保持当前滚动位置，向前展开一页
-window.loadMoreChats = () => {
-  const f = document.getElementById("chatFlow"); if(!f) return;
-  const prevDistToBottom = f.scrollHeight - f.scrollTop;
-  const oldStart = chatRenderStart;
-  chatRenderStart = Math.max(0, oldStart - CHAT_PAGE_SIZE);
-  // 如果已经到头了就直接渲染
-  if(chatRenderStart === oldStart) return;
-
-  // 记录渲染窗口变化，不重置页码
-  const ctx=buildChatCtx();
-  const frag=document.createDocumentFragment();
-  const lastDateRef={v:""};
-
-  // 更早的"加载更多"按钮（如果还有）
-  if(chatRenderStart > 0){
-    const loadMore = document.createElement("div");
-    loadMore.className = "msgs-load-more";
-    loadMore.innerHTML = `<button onclick="loadMoreChats()">↑ 加载更早的消息（剩余 ${chatRenderStart} 条）</button>`;
-    frag.appendChild(loadMore);
-  }
-
-  for(let idx=chatRenderStart; idx<chats.length; idx++){
-    buildMsgInto(frag,chats[idx],idx,ctx,lastDateRef);
-  }
-  f.innerHTML="";
-  f.appendChild(frag);
-  renderedLastDate=lastDateRef.v;
-  // ⭐ 恢复滚动位置：新内容在顶部，保持用户看到的内容不变
-  const newDist = f.scrollHeight - prevDistToBottom;
-  f.scrollTop = Math.max(0, newDist);
-  updateScrollBot();
-};
 
 // Incremental append — used on ordinary new-message events (send / reply / sticker).
 // Only builds DOM for the messages added since the last render, and only
 // autoscrolls if the user was already at (or near) the bottom, so the view
 // doesn't visibly jerk on every message the way a full rebuild does.
-// ⭐ 兼容分页：renderedMsgCount 始终等于 chats.length（窗口覆盖到末尾），新增消息直接追加
 function appendNewChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
   if(renderedMsgCount===0||renderedMsgCount>chats.length){ renderChats(); return; }
@@ -939,11 +901,7 @@ function appendNewChats(){
   for(let idx=renderedMsgCount; idx<chats.length; idx++) buildMsgInto(frag,chats[idx],idx,ctx,lastDateRef);
   f.appendChild(frag);
   renderedMsgCount=chats.length; renderedLastDate=lastDateRef.v;
-  if(wasNear) {
-    requestAnimationFrame(()=>{
-      f.lastElementChild?.scrollIntoView({ block:"end", behavior:"instant" });
-    });
-  }
+  if(wasNear) f.scrollTop=f.scrollHeight;
   unreadCount=0; updateScrollBot();
 }
 
@@ -1059,12 +1017,13 @@ function _ttsGet(key) {
   if (_ttsMem.has(key)) return _ttsMem.get(key);
   if (cfg.ttsPersist) {
     try {
-      const raw = localStorage.getItem(_TTS_LS_PREFIX + key);
-      if (raw) {
-        const arr = JSON.parse(raw);
-        const buf = new Uint8Array(arr).buffer;
-        _ttsMem.set(key, buf);
-        return buf;
+      const b64 = localStorage.getItem(_TTS_LS_PREFIX + key);
+      if (b64) {
+        const bin = atob(b64);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        _ttsMem.set(key, buf.buffer);
+        return buf.buffer;
       }
     } catch(e) {}
   }
@@ -1074,8 +1033,10 @@ function _ttsSet(key, buffer) {
   _ttsMem.set(key, buffer);
   if (cfg.ttsPersist) {
     try {
-      const arr = Array.from(new Uint8Array(buffer));
-      localStorage.setItem(_TTS_LS_PREFIX + key, JSON.stringify(arr));
+      const bytes = new Uint8Array(buffer);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      localStorage.setItem(_TTS_LS_PREFIX + key, btoa(bin));
     } catch(e) { /* 超出 quota 静默失败 */ }
   }
 }
@@ -1158,7 +1119,6 @@ window.playMiniMaxTTS = async (text) => {
         audio_setting: { sample_rate: 32000, bitrate: 128000, format: "mp3", channel: 1 }
       })
     });
-    if (!response.ok) { toast(`合成失败：HTTP ${response.status}`, "warn"); return; }
     const resJson = await response.json();
 
     if (resJson.base_resp && resJson.base_resp.status_code !== 0) {
@@ -1235,50 +1195,7 @@ function jumpToMsg(t){
   el.classList.add("msg-flash"); setTimeout(()=>el.classList.remove("msg-flash"),900);
 }
 
-function bindChatScroll() {
-  const f = document.getElementById("chatFlow");
-  if (!f) return;
-  // ⚡ 合并 scroll 处理：throttle 到 ~60fps + 统一底部追踪
-  let scrollTicking = false;
-  let wasNearBottom = true;
-  f.addEventListener("scroll", () => {
-    if (scrollTicking) return;
-    scrollTicking = true;
-    requestAnimationFrame(() => {
-      const dist = f.scrollHeight - f.scrollTop - f.clientHeight;
-      if (dist < 60) unreadCount = 0;
-      wasNearBottom = dist < 80;
-      updateScrollBot();
-      scrollTicking = false;
-    });
-  }, { passive: true });
-  // ⚡ 移动端键盘弹出/收起：ResizeObserver 监听 #chatApp
-  const chatApp = document.getElementById("chatApp");
-  if (!chatApp) return;
-  let lastCFH = f.clientHeight;
-  let _kbTimers = []; // 追踪键盘动画定时器，防止堆积
-  const scrollToBottom = () => {
-    if (f.lastElementChild) {
-      f.lastElementChild.scrollIntoView({ block: "end", behavior: "instant" });
-    }
-  };
-  const ro = new ResizeObserver(() => {
-    const newH = f.clientHeight;
-    if (newH === lastCFH) return;
-    const shrinking = newH < lastCFH;
-    lastCFH = newH;
-    // 清理上一次残留的键盘追踪定时器
-    _kbTimers.forEach(clearTimeout);
-    _kbTimers = [];
-    if (shrinking && wasNearBottom) {
-      requestAnimationFrame(scrollToBottom);
-      _kbTimers.push(setTimeout(scrollToBottom, 60));
-      _kbTimers.push(setTimeout(scrollToBottom, 160));
-      _kbTimers.push(setTimeout(scrollToBottom, 320));
-    }
-  });
-  ro.observe(chatApp);
-}
+function bindChatScroll(){ document.getElementById("chatFlow").addEventListener("scroll",()=>{ const f=document.getElementById("chatFlow"); if(f.scrollHeight-f.scrollTop-f.clientHeight<60) unreadCount=0; updateScrollBot(); }); }
 function updateScrollBot(){ const f=document.getElementById("chatFlow"); if(!f) return; const near=f.scrollHeight-f.scrollTop-f.clientHeight<60; document.getElementById("scrollBot").classList.toggle("on",!near&&chats.length>5); const ub=document.getElementById("unreadBadge"); if(unreadCount>0&&!near){ub.classList.remove("hidden");ub.innerText=unreadCount;}else ub.classList.add("hidden"); }
 window.scrollChatBottom = ()=>{ const f=document.getElementById("chatFlow"); f.scrollTo({top:f.scrollHeight,behavior:"smooth"}); unreadCount=0; };
 function getActiveInput(){ return document.querySelector(`.input-style-${cfg.chatStyle}:not(.hidden) .msg-in`); }
@@ -1291,21 +1208,13 @@ window.sendMsg = async()=>{
   if(t.includes("【翻译】")){ const p=t.split("【翻译】"); userText=p[0].trim(); userTrans=p[1].trim(); }
   const msgObj={sender:"self",text:userText,translation:userTrans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime()};
   if(pendingQuote) msgObj.quote=pendingQuote;
-  _addChatMsg(msgObj); document.querySelectorAll(".msg-in").forEach(el=>el.value=""); window.clearPendingQuote();
+  chats.push(msgObj); document.querySelectorAll(".msg-in").forEach(el=>el.value=""); window.clearPendingQuote();
   if(cfg.soundOn) playSoundById(cfg.activeSoundId || "__builtin_thud1__");
   if(navigator.vibrate) navigator.vibrate(18);
   const _sb=document.querySelector('.input-style-1:not(.hidden) .in-btn.send,.input-style-2:not(.hidden) .i2-send,.input-style-3:not(.hidden) .i3-send:not(.alt),.input-style-4:not(.hidden) .i4-send:not(.alt)');
   if(_sb){_sb.classList.add('sent-flash');setTimeout(()=>_sb.classList.remove('sent-flash'),400);}
-  await saveAll(); appendNewChats();
-  // ⚡ 先让新消息滚入视野（scrollIntoView 浏览器原生处理，iOS 键盘感知更好）
-  const cf = document.getElementById("chatFlow");
-  if (cf && cf.lastElementChild) {
-    cf.lastElementChild.scrollIntoView({ block: "end", behavior: "instant" });
-  }
-  // 再聚焦输入框（键盘弹出由上方 ResizeObserver 自动追踪 scrollToBottom）
-  getActiveInput()?.focus();
-  // ⭐ 用户发消息后，彼按概率自动回复（replyProb: 0-100，默认60%）
-  // 若已有回复/主动发送在进行中则不重复触发
+  await saveAll(); appendNewChats(); getActiveInput()?.focus();
+  // 用户发消息后，彼按概率自动回复（replyProb: 0-100，默认60%）
   if(!replyTimer && !typingNode && Math.random() * 100 < (cfg.replyProb ?? 60)){
     scheduleReply(/*isAuto=*/true);
   }
@@ -1320,12 +1229,9 @@ function showHomeTypingBar(on){
   if(txt) txt.textContent=cfg.typingText||"正在输入";
   bar.classList.toggle("active",on);
 }
-// ⭐ isAuto=true 表示这是用户发消息后自动触发的回复（非手动点击语音按钮）
-// 自动触发不走 ignoreOn"已读不回"提示，避免静默时弹出无关toast
-function scheduleReply(isAuto = false){
+function scheduleReply(){
   if(replyTimer||typingNode) return;
-  // 仅手动点击时走"已读不回"逻辑，自动回复不弹出"未回复"提示
-  if(!isAuto && cfg.ignoreOn && Math.random() < 0.5) {
+  if(cfg.ignoreOn && Math.random() < 0.5) {
     toast("未回复");
     return;}
   const sec=randInt(cfg.delayMin,cfg.delayMax);
@@ -1335,7 +1241,7 @@ function scheduleReply(isAuto = false){
     const av=imgs.oppAvatar||window.DEFAULTS.PH_SVG;
     typingNode.innerHTML=`${cfg.showAvatar?`<div class="av-col"><img class="av" src="${av}"></div>`:""}
       <div class="typing-pure"><span class="t-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="tip-text">${escapeHtml(cfg.typingText||"正在输入")}</span></div>`;
-    f.appendChild(typingNode); requestAnimationFrame(()=>{ typingNode.scrollIntoView({ block:"end", behavior:"instant" }); });
+    f.appendChild(typingNode); f.scrollTop=f.scrollHeight;
   } else {
     showHomeTypingBar(true);
   }
@@ -1349,10 +1255,9 @@ async function fireReply(){
     const stickerPool=stickers.filter(s=>!s.shielded);
     if(stickerPool.length && Math.random()*100<STICKER_CHANCE){
       const stk=stickerPool[Math.floor(Math.random()*stickerPool.length)];
-      let nameS=texts.opp_name||"ta", avatarS=imgs.oppAvatar||"";
-      if(cfg.groupMode&&groupMembers.length){ const ms=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameS=ms.name; avatarS=ms.avatar||window.DEFAULTS.PH_SVG; }
-      // ⭐ 记录彼时虚拟时钟值，避免所有历史消息显示同一个实时时钟
-      _addChatMsg({sender:"opp",text:"[表情包]",sticker:true,stickerId:stk.id,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameS,avatar:avatarS,oppTimeVal:cfg.oppCustomTime&&cfg.oppTime?getOppDisplayTime():""});
+      let nameS=texts.opp_name||"温语", avatarS=imgs.oppAvatar||"", memberIdS="";
+      if(cfg.groupMode&&groupMembers.length){ const ms=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameS=ms.name; avatarS=ms.avatar||window.DEFAULTS.PH_SVG; memberIdS=ms.id; }
+      chats.push({sender:"opp",text:"[表情包]",sticker:true,stickerId:stk.id,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameS,memberId:memberIdS});
       await saveAll();
       if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
       else { if(cfg.popupOn) showPopup("[表情包]",nameS,avatarS); }
@@ -1376,12 +1281,11 @@ async function fireReply(){
     if(cfg.sentenceJoin&&arr.length>1){ const usedSeps=new Set(); function pickUniqSep(){ let s,tries=0; do{s=randomSep();tries++;}while(usedSeps.has(s)&&tries<SEP_POOL.length); usedSeps.add(s); return s; } let joined=arr[0]; for(let si=1;si<arr.length;si++) joined+=pickUniqSep()+arr[si]; text=joined; if(transArr.length){ let tjoin=transArr[0]; for(let si=1;si<transArr.length;si++) tjoin+=pickUniqSep()+transArr[si]; trans=tjoin; } }
     else if(arr.length>1){
       // 连句关闭：每条单独推入 chats，最后一条走正常流程
-      let name2=texts.opp_name||"ta", avatar2=imgs.oppAvatar||"";
-      if(cfg.groupMode&&groupMembers.length){ const m2=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name2=m2.name; avatar2=m2.avatar||window.DEFAULTS.PH_SVG; }
+      let name2=texts.opp_name||"温语", avatar2=imgs.oppAvatar||"", memberId2="";
+      if(cfg.groupMode&&groupMembers.length){ const m2=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name2=m2.name; avatar2=m2.avatar||window.DEFAULTS.PH_SVG; memberId2=m2.id; }
       for(let fi=0;fi<arr.length-1;fi++){
         const nt=new Date(now.getTime()+fi*500);
-        // ⭐ 记录虚拟时钟值
-        _addChatMsg({sender:"opp",text:arr[fi],translation:transArr[fi]||"",time:fmtTime(nt),timeWithSec:fmtTime(nt,true),date:fmtDate(nt),ts:nt.getTime(),lyric:false,quote:"",name:name2,avatar:avatar2,fragments:[arr[fi]],oppTimeVal:cfg.oppCustomTime&&cfg.oppTime?getOppDisplayTime():""});
+        chats.push({sender:"opp",text:arr[fi],translation:transArr[fi]||"",time:fmtTime(nt),timeWithSec:fmtTime(nt,true),date:fmtDate(nt),ts:nt.getTime(),lyric:false,quote:"",name:name2,memberId:memberId2,fragments:[arr[fi]]});
       }
       text=arr[arr.length-1]; trans=transArr[arr.length-1]||"";
     }
@@ -1389,10 +1293,9 @@ async function fireReply(){
   }
   let quote="";
   if(!isLyric&&cfg.quoteOn&&Math.random()<0.3){ const my=chats.filter(c=>c.sender==="self").slice(-10); if(my.length) quote=my[Math.floor(Math.random()*my.length)].text; }
-  let name=texts.opp_name||"ta", avatar=imgs.oppAvatar||"";
-  if(cfg.groupMode&&groupMembers.length){ const m=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name=m.name; avatar=m.avatar||window.DEFAULTS.PH_SVG; }
-  // ⭐ 记录虚拟时钟值：每条对方消息锁定彼时的钟表读数
-  _addChatMsg({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,avatar,fragments,oppTimeVal:cfg.oppCustomTime&&cfg.oppTime?getOppDisplayTime():""});
+  let name=texts.opp_name||"温语", avatar=imgs.oppAvatar||"", memberId="";
+  if(cfg.groupMode&&groupMembers.length){ const m=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name=m.name; avatar=m.avatar||window.DEFAULTS.PH_SVG; memberId=m.id; }
+  chats.push({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,memberId,fragments});
   await saveAll();
   if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
   else { if(cfg.popupOn) showPopup(text,name,avatar); }
@@ -1428,8 +1331,12 @@ function scheduleActive(resume = false){
 }
 
 window.clearAllChats = async()=>{ if(!confirm("确实要清空？")) return; chats=[]; openTrans=new Set(); await saveAll(); renderChats(); toast("已清空"); };
-// ⭐ 聊天记录自动裁剪：保留最近 N 条
+// ⭐ 存储上限（防无限膨胀）
 const CHAT_MAX = 2000;
+const MAX_STICKERS = 200;
+const MAX_CARDS = 5000;
+const MAX_SOUNDS = 50;
+const MAX_CAROUSEL = 20;
 function _addChatMsg(msg) {
   chats.push(msg);
   if (chats.length > CHAT_MAX + 500) {
@@ -1508,19 +1415,13 @@ function hidePopup(){ document.getElementById("msgPopup").classList.remove("on")
 
 // ─── Search ───
 window.toggleSearch = ()=>{ const sp=document.getElementById("searchPane"); sp.classList.toggle("on"); if(sp.classList.contains("on")){document.getElementById("chatSearch").focus();doSearchChat();} };
-// ⚡ 实际搜索逻辑（无防抖）：由 JS 直接调用（打开搜索、点击搜索按钮）
 window.doSearchChat = ()=>{
   const q=document.getElementById("chatSearch").value.trim().toLowerCase();
   const res=document.getElementById("searchRes"); res.innerHTML="";
   if(!q){res.innerHTML=`<div class="empty-tip">…</div>`;return;}
-  const matches=[];
-  for(let i=0;i<chats.length;i++){
-    const c=chats[i];
-    if(!c.lyric&&c.text.toLowerCase().includes(q)) matches.push({c,i});
-    if(matches.length>=30) break; // ⚡ 提前截断，不需要处理全部
-  }
+  const matches=chats.map((c,i)=>({c,i})).filter(x=>!x.c.lyric&&x.c.text.toLowerCase().includes(q));
   if(!matches.length){res.innerHTML=`<div class="empty-tip">无结果</div>`;return;}
-  matches.forEach(x=>{
+  matches.slice(0,30).forEach(x=>{
     const d=document.createElement("div"); d.className="ri";
     const from=x.c.sender==="self"?(texts.l1_name||"我"):(x.c.name||texts.opp_name||"对方");
     const hl=escapeHtml(x.c.text).replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),"gi"),m=>`<mark>${m}</mark>`);
@@ -1528,18 +1429,6 @@ window.doSearchChat = ()=>{
     d.addEventListener("click",()=>{ document.getElementById("searchPane").classList.remove("on"); jumpToMsg(x.c.text); });
     res.appendChild(d);
   });
-};
-// ⚡ 防抖版：oninput 使用，避免每次按键都遍历全部聊天记录
-let _searchDebounce = null;
-window.doSearchChatDebounced = ()=>{
-  clearTimeout(_searchDebounce);
-  _searchDebounce = setTimeout(() => doSearchChat(), 200);
-};
-// ⚡ 卡牌搜索防抖：oninput 不每次按键都全量渲染
-let _cardRenderTimer = null;
-window.renderCardsDebounced = () => {
-  clearTimeout(_cardRenderTimer);
-  _cardRenderTimer = setTimeout(() => window.renderCards(), 200);
 };
 
 // ─── Cards ───
@@ -1665,7 +1554,7 @@ window.closeCatDd=()=>{ const l=document.getElementById("cat-dd-list"); if(l) l.
 window.pickCat=(cat)=>{ const lbl=document.getElementById("cat-dd-label"); const inp=document.getElementById("m_c"); if(lbl) lbl.textContent=cat; if(inp){ inp.value=cat; inp.style.display="none"; } const dd=document.getElementById("cat-dd"); if(dd) dd.style.display=""; closeCatDd(); };
 window.pickCatNew=()=>{ closeCatDd(); const dd=document.getElementById("cat-dd"); const inp=document.getElementById("m_c"); if(dd) dd.style.display="none"; if(inp){ inp.style.display=""; inp.value=""; inp.focus(); } };
 window.selectAddCat=(el,cat)=>{ document.querySelectorAll(".cat-chip").forEach(c=>c.classList.remove("active")); el.classList.add("active"); const inp=document.getElementById("m_c"); if(inp) inp.value=cat; };
-window.addCardConfirm = async()=>{ const t=document.getElementById("m_t").value.trim(); const tr=document.getElementById("m_tr").value.trim(); const c=document.getElementById("m_c").value.trim()||"未命名"; if(!t) return; if(c==="歌词库"){t.split("\n").map(l=>l.trim()).filter(l=>l).forEach((line,i)=>cards.push({id:"c"+Date.now()+i,text:line,translation:tr,cat:c}));}else{cards.push({id:"c"+Date.now(),text:t,translation:tr,cat:c});} await saveAll(); window.renderCards(); closeModal(); };
+window.addCardConfirm = async()=>{ const t=document.getElementById("m_t").value.trim(); const tr=document.getElementById("m_tr").value.trim(); const c=document.getElementById("m_c").value.trim()||"未命名"; if(!t) return; if(c==="歌词库"){const lines=t.split("\n").map(l=>l.trim()).filter(l=>l); if(cards.length+lines.length>MAX_CARDS){toast(`字卡已达上限 ${MAX_CARDS} 张`,"warn");return;} lines.forEach((line,i)=>cards.push({id:"c"+Date.now()+i,text:line,translation:tr,cat:c}));}else{if(cards.length>=MAX_CARDS){toast(`字卡已达上限 ${MAX_CARDS} 张`,"warn");return;}cards.push({id:"c"+Date.now(),text:t,translation:tr,cat:c});} await saveAll(); window.renderCards(); closeModal(); };
 window.openBulkAdd = ()=>{ modal("批量导入",`<div class="fld-tip">【分组名】→ 内容，【翻译】分隔译文</div><textarea class="fld area" id="m_bulk" style="min-height:140px;"></textarea><button class="pill-btn" onclick="bulkAddDo()">导入</button>`); };
 function parseTxtToCards(raw){ let cur="未命名",n=0,out=[]; raw.split("\n").forEach(line=>{ const t=line.trim(); if(!t) return; const mm=t.match(/^【(.+)】$/); if(mm){cur=mm[1].trim();return;} let txt=t,tr=""; if(t.includes("【翻译】")){const p=t.split("【翻译】");txt=p[0].trim();tr=p[1].trim();} out.push({id:"c"+Date.now()+(n++),text:txt,translation:tr,cat:cur}); }); return out; }
 async function importWithMergePrompt(newCards){ if(!newCards.length) return;
@@ -1679,9 +1568,10 @@ async function importWithMergePrompt(newCards){ if(!newCards.length) return;
 window.doImport = async mode => {
   const newCards = window._pendingImport || []; window._pendingImport = null;
   if(mode==='replace'){
-    cards = newCards;
+    if(newCards.length > MAX_CARDS){ toast(`导入数量超过上限 ${MAX_CARDS}，已截断`,"warn"); cards = newCards.slice(0, MAX_CARDS); }
+    else cards = newCards;
   } else {
-    newCards.forEach(nc=>{ if(!cards.some(c=>c.text===nc.text&&c.cat===nc.cat)) cards.push(nc); });
+    newCards.forEach(nc=>{ if(cards.length>=MAX_CARDS) return; if(!cards.some(c=>c.text===nc.text&&c.cat===nc.cat)) cards.push(nc); });
   }
   await saveAll(); window.renderCards(); closeModal(); toast(`已导入 ${newCards.length} 条`);
 };
@@ -1690,6 +1580,7 @@ window.batchDelete = async()=>{ if(!selected.length) return; cards=cards.filter(
 window.batchShield = async v=>{ if(!selected.length) return; cards.forEach(c=>{if(selected.includes(c.id))c.shielded=v;}); selected=[]; await saveAll(); window.renderCards(); };
 window.batchMove = ()=>{ if(!selected.length) return; const cs=Array.from(new Set(cards.map(c=>c.cat))); const opts=cs.map(c=>`<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join(""); modal("批量移组",`<select class="fld" id="m_tg">${opts}</select><input class="fld" id="m_new" placeholder="或新建分组"><button class="pill-btn" onclick="batchMoveDo()">移</button>`); };
 window.batchMoveDo = async()=>{ const tg=document.getElementById("m_new").value.trim()||document.getElementById("m_tg").value; if(!tg) return; cards.forEach(c=>{if(selected.includes(c.id))c.cat=tg;}); selected=[]; await saveAll(); window.renderCards(); closeModal(); };
+window.openTxtIO = ()=>{ modal("TXT",`<div class="pill-btn-group"><button class="pill-btn" onclick="exportCards()">导出</button><button class="pill-btn" onclick="document.getElementById('fpCard').click();closeModal();">导入</button></div>`); };
 window.exportCards = ()=>{ const mm={}; cards.forEach(c=>{(mm[c.cat]=mm[c.cat]||[]).push(c.translation?(c.text+"【翻译】"+c.translation):c.text);}); let s=""; for(const k in mm) s+=`【${k}】\n`+mm[k].join("\n")+"\n\n"; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([s],{type:"text/plain;charset=utf-8"})); a.download=`字卡_${Date.now()}.txt`; a.click(); closeModal(); };
 function onPickCardTxt(e){ const f=e.target.files[0]; if(!f) return; const r=new FileReader(); r.onload=async ev=>{ await importWithMergePrompt(parseTxtToCards(ev.target.result)); }; r.readAsText(f); }
 window.toggleBatchMode = ()=>{ isBatchSelecting=!isBatchSelecting; const btn=document.querySelector(".batch-toggle-btn"); if(btn) btn.style.opacity=isBatchSelecting?"1":".5"; if(!isBatchSelecting) selected=[]; window.renderCards(); };
@@ -1783,6 +1674,7 @@ window.addStickersFromUrls = async () => {
   const ta=document.getElementById("m_skUrls"); if(!ta) return;
   const lines=ta.value.split("\n").map(s=>s.trim()).filter(Boolean);
   if(!lines.length){ toast("请先粘贴链接","warn"); return; }
+  if(stickers.length + lines.length > MAX_STICKERS){ toast(`表情包已达上限 ${MAX_STICKERS} 个`,"warn"); return; }
   const existing=new Set(stickers.map(s=>s.src));
   let added=0, skipped=0;
   lines.forEach((url,i)=>{
@@ -1794,55 +1686,15 @@ window.addStickersFromUrls = async () => {
   toast(skipped?`已添加 ${added} 个（跳过 ${skipped} 个重复）`:`已添加 ${added} 个`);
 };
 window.triggerStickerPick = () => { closeModal(); const i=document.getElementById("fpSticker"); i.value=""; i.click(); };
-// ⭐ 通用图片压缩：限制宽度+JPEG质量，大幅降低Base64体积
-function _compressImg(file, maxW = 800, quality = 0.75) {
-  return new Promise((resolve) => {
-    // ≤50KB 小文件原样保留
-    if (file.size < 50000) {
-      const r = new FileReader();
-      r.onload = () => resolve({ data: r.result, origSize: file.size, newSize: r.result.length });
-      r.onerror = () => resolve(null);
-      r.readAsDataURL(file);
-      return;
-    }
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      let w = img.width, h = img.height;
-      if (w <= maxW && file.type !== 'image/png') {
-        const r = new FileReader();
-        r.onload = () => resolve({ data: r.result, origSize: file.size, newSize: r.result.length });
-        r.onerror = () => resolve(null);
-        r.readAsDataURL(file);
-        return;
-      }
-      if (w > maxW) { h = Math.round(h * (maxW / w)); w = maxW; }
-      const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
-      const data = canvas.toDataURL('image/jpeg', quality);
-      resolve({ data, origSize: file.size, newSize: data.length });
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); const r = new FileReader(); r.onload = () => resolve({ data: r.result, origSize: file.size, newSize: r.result.length }); r.onerror = () => resolve(null); r.readAsDataURL(file); };
-    img.src = url;
-  });
-}
-// ⭐ 表情包压缩：限制最大宽度400px+JPEG质量0.6
-function _compressStickerImage(file) {
-  return _compressImg(file, 400, 0.6).then(r => r ? r.data : null);
-}
 function onPickSticker(e){
   const fs=Array.from(e.target.files); if(!fs.length) return;
-  let done=0;
+  if(stickers.length + fs.length > MAX_STICKERS){ toast(`表情包已达上限 ${MAX_STICKERS} 个`,"warn"); return; }
+  let done=0, added=0;
   fs.forEach((f,i)=>{
-    // ⭐ 压缩图片后再存储
-    _compressStickerImage(f).then(data => {
-      if (!data) { done++; return; }
-      stickers.push({id:"sk"+Date.now()+i, src:data, type:"upload", shielded:false, addedAt:Date.now()});
+    _compressStickerImage(f).then(async data=>{
+      if(data) { stickers.push({id:"sk"+Date.now()+added, src:data, type:"upload", shielded:false, addedAt:Date.now()}); added++; }
       done++;
-      if(done===fs.length){ saveAll(); window.renderStickers(); toast(`已添加 ${fs.length} 个`); }
+      if(done===fs.length){ await saveAll(); window.renderStickers(); toast(`已添加 ${added} 个`); }
     });
   });
 }
@@ -1868,7 +1720,7 @@ function renderStickerPickerGrid(){
 window.sendSticker = async id => {
   const s=stickers.find(x=>x.id===id); if(!s) return;
   const now=new Date();
-  _addChatMsg({sender:"self", text:"[表情包]", sticker:true, stickerId:id, time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime()});
+  chats.push({sender:"self", text:"[表情包]", sticker:true, stickerId:id, time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime()});
   window.clearPendingQuote();
   if(cfg.soundOn) playSoundById(cfg.activeSoundId || "__builtin_thud1__");
   if(navigator.vibrate) navigator.vibrate(18);
@@ -2141,13 +1993,11 @@ function tally(arr){ const m={}; arr.forEach(t=>{if(!t)return;m[t]=(m[t]||0)+1;}
 
 // ─── Backup ───
 window.openBackup = ()=>{ modal("数据",`<div class="pill-btn-group"><button class="pill-btn" onclick="fullExport()">导出备份</button><button class="pill-btn" onclick="document.getElementById('fpJson').click();closeModal();">导入备份</button></div>`); };
-// ⭐ 完整备份：含问卷、问卷记录、表情包（之前遗漏导致还原丢失数据）
-window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds,surveys,surveyRecords,stickers}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
-// ⭐ 完整还原：含问卷、问卷记录、表情包（与 fullExport 对应）
+window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
 function onPickJson(e){
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) chats=d.chats; if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; if(d.surveys) surveys=d.surveys; if(d.surveyRecords) surveyRecords=d.surveyRecords; if(d.stickers) stickers=d.stickers; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderStickers(); window.renderMembers(); renderCarousel(); renderMosaic(); renderSurveys(); toast("还原完毕"); }catch{ alert("数据损坏"); } };
+  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) chats=d.chats; if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); renderCarousel(); renderMosaic();  toast("还原完毕"); }catch{ alert("数据损坏"); } };
   r.readAsText(f);
 }
 window.factoryReset = async()=>{ if(!confirm("确认销毁并重置？")) return; indexedDB.deleteDatabase(DB_NAME); setTimeout(()=>location.reload(),200); };
@@ -2172,10 +2022,6 @@ function toast(t, type = "default") {
 function setDockActive(id){ document.querySelectorAll(".dock-btn").forEach(b=>b.classList.toggle("active",b.dataset.app===id)); }
 window.openApp = id=>{
   const el=document.getElementById(id); if(!el) return;
-  // ⚡ 先关闭所有 app，避免多个 app 同时叠加或残留 active 拦截点击
-  document.querySelectorAll(".app.active").forEach(app => app.classList.remove("active"));
-  // ⚡ 关闭可能残留的弹窗，防止遮罩层阻挡新 app 的交互
-  document.getElementById("modal").classList.remove("on");
   el.classList.add("active"); currentApp=id; setDockActive(id);
   if(id==="cardsApp")      { window.renderCards(); window.renderStickers(); }
   if(id==="groupApp")      window.renderMembers();
@@ -2183,8 +2029,6 @@ window.openApp = id=>{
   if(id==="textsApp")      renderTextsApp();
   if(id==="chatApp"){
     renderChats(); unreadCount=0; showHomeTypingBar(false);
-    /* ⚡ 进入聊天时重启对方时间计时器 */
-    startOppTimeTicker();
     if((replyTimer)&&!typingNode){
       const f=document.getElementById("chatFlow");
       if(f){
@@ -2192,301 +2036,14 @@ window.openApp = id=>{
         const av=imgs.oppAvatar||window.DEFAULTS.PH_SVG;
         typingNode.innerHTML=`${cfg.showAvatar?`<div class="av-col"><img class="av" src="${av}"></div>`:""}
           <div class="typing-pure"><span class="t-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="tip-text">${escapeHtml(cfg.typingText||"正在输入")}</span></div>`;
-        f.appendChild(typingNode); requestAnimationFrame(()=>{ typingNode.scrollIntoView({ block:"end", behavior:"instant" }); });
+        f.appendChild(typingNode); f.scrollTop=f.scrollHeight;
       }
     }
   }
 };
-window.closeApp = id=>{ document.getElementById(id).classList.remove("active"); if(currentApp===id){currentApp=null;setDockActive(""); if(id==="chatApp"){ if(typingNode){typingNode.remove();typingNode=null;} if(replyTimer) showHomeTypingBar(true); /* ⚡ 离开聊天时停止对方时间计时器 */ if(_oppTimeTicker){clearInterval(_oppTimeTicker);_oppTimeTicker=null;} }} };
+window.closeApp = id=>{ document.getElementById(id).classList.remove("active"); if(currentApp===id){currentApp=null;setDockActive(""); if(id==="chatApp"){ if(typingNode){typingNode.remove();typingNode=null;} if(replyTimer) showHomeTypingBar(true); }} };
 
-// ═══════════════════════════════════════
-//  🎵 云端音乐系统 · 轻量化缓存 + 随机播放 + 歌词同步
-// ═══════════════════════════════════════
-
-// ─── 播放器状态 ───
-let musicAudio = null;
-let _shufflePool = [], _shuffleIdx = -1, _lrcLines = [], _lrcTimer = null;
-let _lrcTextCache = new Map(); // Map<lrcUrl, lrcText> 不污染 song 对象
-let _cloudPreloadDone = false;
-
-// ─── 云端曲库 ───
-const CLOUD_MUSIC_LF_KEY = "cy-music-idx";
-const CLOUD_MUSIC_LF_META = "cy-music-meta";
-const CLOUD_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h 过期
-
-let _musicLF = null;
-function _ensureMusicLF() {
-  if (!_musicLF && typeof localforage !== "undefined") {
-    _musicLF = localforage.createInstance({ name: "scMusic" });
-  }
-  return _musicLF;
-}
-
-/* 轻量化索引结构
-   云端 index.json 格式: [{name:"歌名 - 歌手", mp3:"url", lrc:"url"}, …]
-   lrc 是 .lrc 歌词文件 URL，需要 fetch 后才是 LRC 文本
-   本地缓存只保留: {n, u, l} — name, url, lrcUrl 压缩字段名 */
-function _packSong(s) { return { n: s.name, u: s.mp3, l: s.lrc || "" }; }
-function _unpackSong(s) { return { name: s.n, mp3: s.u, lrc: s.l || "" }; }
-
-// 从云端获取 index.json（三层轻量化缓存）
-async function fetchCloudIndex(forceRefresh) {
-  const lf = _ensureMusicLF();
-
-  // ① 内存缓存
-  if (!forceRefresh && cloudSongCache && cloudSongCache.length) return cloudSongCache;
-
-  // ② localforage 缓存 + TTL 检查
-  if (!forceRefresh && lf) {
-    try {
-      const meta = await lf.getItem(CLOUD_MUSIC_LF_META);
-      if (meta && meta.at && (Date.now() - meta.at < CLOUD_CACHE_TTL)) {
-        const packed = await lf.getItem(CLOUD_MUSIC_LF_KEY);
-        if (packed && packed.length) {
-          cloudSongCache = packed.map(_unpackSong);
-          updateCloudStatus(`已缓存 ${packed.length} 首 · ${new Date(meta.at).toLocaleDateString()}`);
-          return cloudSongCache;
-        }
-      }
-    } catch (e) { /* fall through */ }
-  }
-
-  // ③ 网络获取
-  updateCloudStatus("正在连接云端曲库…");
-  try {
-    const indexUrl = cfg.cloudMusicIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-music/main/index.json";
-    const res = await fetch(indexUrl);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const raw = await res.json();
-    if (!Array.isArray(raw) || !raw.length) throw new Error("索引为空");
-
-    cloudSongCache = raw;
-
-    // 轻量化写入 localforage
-    if (lf) {
-      const packed = raw.map(_packSong);
-      try {
-        await lf.setItem(CLOUD_MUSIC_LF_KEY, packed);
-        await lf.setItem(CLOUD_MUSIC_LF_META, { at: Date.now(), count: packed.length });
-      } catch (e) {}
-    }
-
-    cfg.cloudMusicLastSync = Date.now();
-    saveAllDebounced();
-    updateCloudStatus(`共 ${raw.length} 首 · 已同步`);
-    return raw;
-  } catch (e) {
-    updateCloudStatus("连接失败，使用缓存");
-    if (cloudSongCache) return cloudSongCache;
-    if (lf) {
-      try {
-        const packed = await lf.getItem(CLOUD_MUSIC_LF_KEY);
-        if (packed && packed.length) { cloudSongCache = packed.map(_unpackSong); updateCloudStatus(`离线 ${packed.length} 首`); return cloudSongCache; }
-      } catch(e2) {}
-    }
-    toast("无法获取云端曲库", "warn");
-    return [];
-  }
-}
-
-function updateCloudStatus(msg) {
-  const el = document.getElementById("cloudMusicStatus");
-  if (el) { el.style.display = ""; el.textContent = msg; }
-}
-
-// ─── 后台预加载曲库（首页加载后 3s 空闲时触发）───
-function _backgroundPreload() {
-  if (_cloudPreloadDone) return;
-  setTimeout(() => {
-    if (cloudSongCache && cloudSongCache.length) { _cloudPreloadDone = true; return; }
-    try { fetchCloudIndex().then(() => { _cloudPreloadDone = true; }).catch(() => {}); } catch(e) {}
-  }, 3000);
-}
-
-// ─── 随机播放池 ───
-async function _ensureShufflePool() {
-  if (!cloudSongCache || !cloudSongCache.length) {
-    await fetchCloudIndex();
-  }
-  if (cloudSongCache && cloudSongCache.length) {
-    _shufflePool = [...cloudSongCache];
-    // Fisher-Yates 洗牌
-    for (let i = _shufflePool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [_shufflePool[i], _shufflePool[j]] = [_shufflePool[j], _shufflePool[i]];
-    }
-    _shuffleIdx = -1;
-  }
-}
-
-function _loadCurrentShuffleSong() {
-  if (!_shufflePool.length || _shuffleIdx < 0 || _shuffleIdx >= _shufflePool.length) return null;
-  return _shufflePool[_shuffleIdx];
-}
-
-// ─── LRC 歌词解析 ───
-function _parseLRC(lrc) {
-  const lines = [];
-  if (!lrc) return lines;
-  const parts = lrc.split(/\r?\n/);
-  const regex = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/;
-  for (const p of parts) {
-    const m = p.match(regex);
-    if (!m) continue;
-    const min = parseInt(m[1], 10);
-    const sec = parseInt(m[2], 10);
-    const ms = m[3] ? parseInt(m[3].padEnd(3, "0"), 10) : 0;
-    const time = min * 60 + sec + ms / 1000;
-    const text = p.replace(regex, "").trim();
-    if (text) lines.push({ time, text });
-  }
-  lines.sort((a, b) => a.time - b.time);
-  return lines;
-}
-
-// ─── 异步拉取远程 LRC 文件 ───
-async function _fetchRemoteLrc(url) {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return "";
-    return await res.text();
-  } catch (e) { return ""; }
-}
-
-function _syncLRC(currentTime) {
-  // 找当前歌词行
-  let activeIdx = -1;
-  if (_lrcLines.length) {
-    for (let i = _lrcLines.length - 1; i >= 0; i--) {
-      if (currentTime >= _lrcLines[i].time) { activeIdx = i; break; }
-    }
-  }
-
-  // ── 主页面音乐卡片歌词行（CSS .music-card.playing 控制折叠/展开）──
-  const elCard = document.getElementById("mCardLrc");
-  const elLrcTxt = elCard?.querySelector(".m-lrc-text");
-  if (elCard && elLrcTxt && musicAudio && !musicAudio.paused) {
-    if (activeIdx >= 0) {
-      const txt = _lrcLines[activeIdx].text;
-      if (elLrcTxt.textContent !== txt) {
-        elCard.classList.remove("off");
-        elLrcTxt.textContent = txt;
-        void elLrcTxt.offsetWidth;
-        elCard.classList.add("on");
-      }
-    }
-  }
-
-  // ── 播放器窗口歌词同步 ──
-  const el = document.getElementById("mpLrcBody");
-  if (!el || !_lrcLines.length) return;
-  const items = el.querySelectorAll(".mp-lrc-line");
-  items.forEach((item, i) => {
-    item.classList.toggle("active", i === activeIdx);
-    if (i === activeIdx && activeIdx >= 0) {
-      item.scrollIntoView({ block: "center", behavior: "smooth" });
-    }
-  });
-}
-
-// ─── 封面更新 ───
-function _updateMusicCardUI(song) {
-  if (!song) return;
-  const { title, artist } = _parseCloudSongName(song.name);
-  // 同步主页文字
-  const elTitle = document.querySelector('.music-card .m-title');
-  const elSub = document.querySelector('.music-card .m-sub');
-  if (elTitle) elTitle.textContent = title;
-  if (elSub) elSub.textContent = artist;
-  // 重置歌词行
-  const elCard = document.getElementById("mCardLrc");
-  const elLrcTxt = elCard?.querySelector(".m-lrc-text");
-  if (elCard) { elCard.classList.remove("on", "off"); }
-  if (elLrcTxt) elLrcTxt.textContent = "";
-  document.getElementById("musicCard")?.classList.remove("has-lrc");
-  // 同步播放器窗口
-  const pTitle = document.getElementById("mpTitle");
-  const pArtist = document.getElementById("mpArtist");
-  if (pTitle) pTitle.textContent = title;
-  if (pArtist) pArtist.textContent = artist;
-  // 同步 cfg
-  cfg.musicTitle = title;
-  cfg.musicArtist = artist;
-}
-
-// ─── 播放核心：随机切歌 ───
-async function _playNextRandom() {
-  await _ensureShufflePool();
-  if (!_shufflePool.length) { toast("曲库无数据", "warn"); return; }
-  _shuffleIdx++;
-  if (_shuffleIdx >= _shufflePool.length) {
-    // 播完一轮，重新洗牌
-    for (let i = _shufflePool.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [_shufflePool[i], _shufflePool[j]] = [_shufflePool[j], _shufflePool[i]];
-    }
-    _shuffleIdx = 0;
-  }
-  const song = _loadCurrentShuffleSong();
-  if (!song) return;
-
-  // 清理旧播放器
-  if (musicAudio) { musicAudio.pause(); musicAudio.src = ""; musicAudio.load(); musicAudio = null; }
-  clearInterval(_lrcTimer);
-
-  // 更新 UI
-  _updateMusicCardUI(song);
-  // lrc 字段是 .lrc 文件 URL，通过独立 Map 缓存文本，不污染 song 对象
-  let lrcText = "";
-  if (song.lrc) {
-    if (song.lrc.startsWith("http")) {
-      lrcText = _lrcTextCache.get(song.lrc);
-      if (lrcText === undefined) {
-        lrcText = await _fetchRemoteLrc(song.lrc);
-        if (lrcText) _lrcTextCache.set(song.lrc, lrcText);
-      }
-    } else {
-      lrcText = song.lrc; // 兼容旧索引中已混入的文本
-    }
-  }
-  _lrcLines = _parseLRC(lrcText);
-  // 有歌词时展开卡片歌词列，无歌词时保持折叠
-  document.getElementById("musicCard")?.classList.toggle("has-lrc", _lrcLines.length > 0);
-  // 渲染播放器歌词
-  _renderLrcBody();
-
-  // 创建新 Audio
-  updateCloudStatus("载入中…");
-  musicAudio = new Audio(song.mp3);
-  musicAudio._currentSong = song;
-  musicAudio.addEventListener("play", () => {
-    updatePlayIcon(true);
-    updateCloudStatus("");
-    _lrcTimer = setInterval(() => {
-      if (musicAudio) _syncLRC(musicAudio.currentTime);
-    }, 300);
-  });
-  musicAudio.addEventListener("pause", () => {
-    updatePlayIcon(false);
-    clearInterval(_lrcTimer);
-    const elCard = document.getElementById("mCardLrc");
-    if (elCard) { elCard.classList.add("off"); elCard.classList.remove("on"); }
-  });
-  musicAudio.addEventListener("ended", () => { _playNextRandom(); });
-  musicAudio.addEventListener("error", () => {
-    toast("加载失败，跳过当前曲目", "warn");
-    updatePlayIcon(false);
-    clearInterval(_lrcTimer);
-    const failedAudio = musicAudio;
-    setTimeout(() => { if (musicAudio === failedAudio) _playNextRandom(); }, 1500);
-  });
-  musicAudio.addEventListener("canplaythrough", () => { updateCloudStatus(""); }, { once: true });
-
-  try { await musicAudio.play(); } catch(e) {
-    if (e.name === "NotAllowedError") toast("浏览器拦截了自动播放，请再点一次", "warn");
-  }
-}
-
+// ─── Music ───
 // ─── 主页播放按钮绑定 ───
 function bindMusicPlayer() {
   const btn = document.getElementById("musicPlay"); if (!btn) return;
@@ -2540,747 +2097,15 @@ function updatePlayIcon(playing) {
     : `<polygon points="5 4 21 12 5 20 5 4" fill="currentColor"/>`;
   document.getElementById("musicCard")?.classList.toggle("playing", playing);
   document.getElementById("musicEq")?.classList.toggle("on", playing);
-  // 更新播放器面板按钮
   const pBtn = document.getElementById("mpPlay");
   if (pBtn) pBtn.innerHTML = playing
     ? `<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><rect x="6" y="5" width="3" height="14"/><rect x="15" y="5" width="3" height="14"/></svg>`
     : `<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><polygon points="5 4 21 12 5 20 5 4"/></svg>`;
 }
 
-// ─── 音乐播放窗口（歌词面板）───
-window.openMusicPlayer = async () => {
-  await _ensureShufflePool();
-  const currentSong = musicAudio?._currentSong || null;
-  const title = currentSong ? _parseCloudSongName(currentSong.name).title : (cfg.musicTitle || "未选择");
-  const artist = currentSong ? _parseCloudSongName(currentSong.name).artist : (cfg.musicArtist || "—");
-
-  _lrcLines = [];
-  if (currentSong?.lrc) {
-    let lrcText = currentSong.lrc;
-    if (lrcText.startsWith("http")) {
-      lrcText = _lrcTextCache.get(lrcText);
-      if (lrcText === undefined) {
-        lrcText = await _fetchRemoteLrc(currentSong.lrc);
-        if (lrcText) _lrcTextCache.set(currentSong.lrc, lrcText);
-      }
-    }
-    _lrcLines = _parseLRC(lrcText);
-  } else if (cfg.musicLrc) {
-    let lrcText = cfg.musicLrc;
-    if (lrcText.startsWith("http")) lrcText = await _fetchRemoteLrc(lrcText);
-    _lrcLines = _parseLRC(lrcText);
-  }
-
-  document.getElementById("mpTitle").textContent = title;
-  document.getElementById("mpArtist").textContent = artist;
-  document.getElementById("mpCount").textContent = _shufflePool.length ? `${_shufflePool.length} 首` : "";
-  _renderLrcBody();
-  document.getElementById("musicPlayer").classList.add("on");
-  // 同步播放按钮
-  updatePlayIcon(musicAudio && !musicAudio.paused);
-  if (musicAudio && !musicAudio.paused && _lrcLines.length) {
-    _syncLRC(musicAudio.currentTime);
-  }
-};
-window.closeMusicPlayer = () => {
-  document.getElementById("musicPlayer").classList.remove("on");
-  _lrcLines = [];
-};
-
-function _renderLrcBody() {
-  const el = document.getElementById("mpLrcBody");
-  if (!el) return;
-  if (!_lrcLines.length) {
-    el.innerHTML = '<div class="mp-lrc-empty">暂无歌词</div>';
-    return;
-  }
-  el.innerHTML = _lrcLines.map(l => `<div class="mp-lrc-line">${escapeHtml(l.text)}</div>`).join("");
-}
-
-// 播放面板：播放/暂停
-window.mpTogglePlay = () => {
-  if (musicAudio && !musicAudio.paused) { musicAudio.pause(); }
-  else if (musicAudio && musicAudio.paused) { musicAudio.play().catch(() => {}); }
-  else { _playNextRandom(); }
-};
-
-// ─── 云端曲库浏览弹窗 ───
-window.refreshCloudIndex = async () => {
-  const lf = _ensureMusicLF();
-  if (lf) {
-    try { await lf.removeItem(CLOUD_MUSIC_LF_KEY); } catch(e) {}
-    try { await lf.removeItem(CLOUD_MUSIC_LF_META); } catch(e) {}
-  }
-  cloudSongCache = null;
-  _shufflePool = []; _shuffleIdx = -1;
-  await fetchCloudIndex(true);
-  toast("曲库已刷新");
-};
-
-window.openCloudMusicLibrary = async () => {
-  const songs = await fetchCloudIndex();
-  if (!songs.length) { toast("曲库无数据", "warn"); return; }
-  renderCloudModal(songs);
-};
-
-function _parseCloudSongName(name) {
-  const idx = name.lastIndexOf("-");
-  if (idx > 0) return { title: name.substring(0, idx).trim(), artist: name.substring(idx + 1).trim() };
-  return { title: name, artist: "" };
-}
-
-function renderCloudModal(songs) {
-  const html = `
-    <div class="cml-search-wrap">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input class="cml-search" id="cmlSearch" placeholder="搜索歌曲 / 歌手…" oninput="filterCloudSongs()">
-    </div>
-    <div class="cml-status" id="cmlStatus">当前: <b>${escapeHtml(cfg.musicTitle || "未选择")}</b>${cfg.musicArtist ? " — " + escapeHtml(cfg.musicArtist) : ""}</div>
-    <div class="cml-list" id="cmlList"></div>
-  `;
-  modal("云端曲库", html);
-  window._cmlSongs = songs;
-  renderCloudSongList(songs);
-}
-
-window.filterCloudSongs = () => {
-  const q = (document.getElementById("cmlSearch")?.value || "").trim().toLowerCase();
-  const all = window._cmlSongs || [];
-  renderCloudSongList(q ? all.filter(s => s.name.toLowerCase().includes(q)) : all);
-};
-
-function renderCloudSongList(songs) {
-  const el = document.getElementById("cmlList");
-  if (!el) return;
-  if (!songs.length) { el.innerHTML = '<div class="cml-empty">未找到匹配歌曲</div>'; return; }
-
-  const currentUrl = cfg.musicUrl || "";
-  el.innerHTML = songs.map((s, i) => {
-    const { title, artist } = _parseCloudSongName(s.name);
-    const isActive = currentUrl === s.mp3;
-    return `
-      <div class="cml-item${isActive ? " active" : ""}" onclick="selectCloudSong(${i})" data-idx="${i}">
-        <div class="cml-item-left">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
-          <div class="cml-item-info">
-            <div class="cml-item-title">${escapeHtml(title)}</div>
-            <div class="cml-item-artist">${escapeHtml(artist)}</div>
-          </div>
-        </div>
-        <div class="cml-item-check">${isActive ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>' : ""}</div>
-      </div>`;
-  }).join("");
-  window._cmlFiltered = songs;
-}
-
-window.selectCloudSong = async (filteredIdx) => {
-  const obj = window._cmlFiltered ? window._cmlFiltered[filteredIdx] : undefined;
-  if (!obj) return;
-  const { title, artist } = _parseCloudSongName(obj.name);
-  cfg.musicUrl = obj.mp3;
-  cfg.musicTitle = title;
-  cfg.musicArtist = artist;
-  // 只存 URL，不存歌词文本（文本由 _lrcTextCache 管理）
-  cfg.musicLrc = (obj.lrc && obj.lrc.startsWith("http")) ? obj.lrc : "";
-  texts.l1_song = title;
-  texts.l1_artist = artist;
-  await saveAll();
-  syncUI();
-  if (window._cmlSongs) renderCloudSongList(window._cmlSongs);
-  closeModal();
-  toast(`已选择: ${title}`);
-  // 切换当前播放
-  if (musicAudio && !musicAudio.paused) {
-    musicAudio.pause(); musicAudio = null;
-    _shufflePool = [obj]; _shuffleIdx = -1;
-    _playNextRandom();
-  }
-};
-
-// ═══ 云端字卡库 ═══
-const CLOUD_CARD_LF_KEY = "cy-card-index";
-
-let _cardLF = null;
-function _ensureCardLF() {
-  if (!_cardLF && typeof localforage !== "undefined") {
-    _cardLF = localforage.createInstance({ name: "SilentChamberCardCache" });
-  }
-  return _cardLF;
-}
-
-// 将 {categories:{key:{label,items}}} 转为扁平数组 [{cat:label,key,items}]]
-function _normaliseCloudCards(data) {
-  if (Array.isArray(data)) {
-    // 旧格式直接数组: [{cat,items}] 或 [{cat,items:[{id,text}]}]
-    return data;
-  }
-  if (data.cards && Array.isArray(data.cards)) {
-    return data.cards; // {cards:[{cat,items}]} 包装
-  }
-  if (data.groups && Array.isArray(data.groups)) {
-    return data.groups; // {groups:[{cat,items}]} 包装
-  }
-  if (data.categories && typeof data.categories === "object") {
-    // 新格式: {categories:{key:{label,items:[{id,text,tags}]}}}
-    const result = [];
-    Object.entries(data.categories).forEach(([key, cat]) => {
-      if (!cat.items || !cat.items.length) return;
-      result.push({ cat: cat.label || key, key, items: cat.items });
-    });
-    return result;
-  }
-  return [];
-}
-
-function _flattenCloudCards(groups) {
-  const all = [];
-  groups.forEach(g => {
-    (g.items || []).forEach(item => {
-      const text = typeof item === "string" ? item : (item.text || "");
-      const translation = typeof item === "string" ? "" : (item.translation || item.tr || "");
-      if (text) all.push({ cat: g.cat, text, translation });
-    });
-  });
-  return all;
-}
-
-async function fetchCloudCards(forceRefresh) {
-  const lf = _ensureCardLF();
-  const indexUrl = cfg.cloudCardIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Word/word.json";
-
-  if (!forceRefresh && cloudCardCache && cloudCardCache.length) return cloudCardCache;
-
-  if (!forceRefresh && lf) {
-    try {
-      const cached = await lf.getItem(CLOUD_CARD_LF_KEY);
-      if (cached && cached.cards && cached.cards.length) {
-        cloudCardCache = cached.cards;
-        updateCloudCardStatus(`已缓存 ${cached.cards.length} 组 · ${new Date(cached.at).toLocaleDateString()}`);
-        return cached.cards;
-      }
-    } catch (e) {}
-  }
-
-  updateCloudCardStatus("正在连接…");
-  try {
-    const res = await fetch(indexUrl);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const cardsData = _normaliseCloudCards(data);
-    if (!Array.isArray(cardsData) || !cardsData.length) throw new Error("索引为空");
-
-    cloudCardCache = cardsData;
-    if (lf) {
-      try { await lf.setItem(CLOUD_CARD_LF_KEY, { cards: cardsData, at: Date.now() }); } catch (e) {}
-    }
-    cfg.cloudCardLastSync = Date.now();
-    saveAllDebounced();
-    const totalItems = cardsData.reduce((s, g) => s + (g.items ? g.items.length : 0), 0);
-    updateCloudCardStatus(`共 ${cardsData.length} 组 · ${totalItems} 条 · 已同步`);
-    return cardsData;
-  } catch (e) {
-    updateCloudCardStatus("连接失败，使用缓存数据");
-    if (cloudCardCache) return cloudCardCache;
-    if (lf) {
-      try { const c = await lf.getItem(CLOUD_CARD_LF_KEY); if (c && c.cards) { cloudCardCache = c.cards; updateCloudCardStatus(`共 ${c.cards.length} 组 · 离线缓存`); return c.cards; } } catch(e2) {}
-    }
-    toast("无法获取云端字卡", "warn");
-    return [];
-  }
-}
-
-function updateCloudCardStatus(msg) {
-  const el = document.getElementById("cloudCardStatus");
-  if (el) { el.style.display = ""; el.textContent = msg; }
-}
-
-window.refreshCloudCards = async () => {
-  const lf = _ensureCardLF();
-  if (lf) { try { await lf.removeItem(CLOUD_CARD_LF_KEY); } catch(e) {} }
-  cloudCardCache = null;
-  await fetchCloudCards(true);
-  toast("字卡库已刷新");
-};
-
-window.openCloudCardLibrary = async () => {
-  const groups = await fetchCloudCards();
-  if (!groups.length) { toast("云端字卡无数据", "warn"); return; }
-  renderCloudCardModal(groups);
-};
-
-// 分组数据结构: { cat:"显示名", key:"内部键", items:[{id,text,tags}]|["字符串"] }
-function _cloudItemText(item) {
-  return typeof item === "string" ? item.trim() : (item.text || "").trim();
-}
-function _cloudItemTranslation(item) {
-  return typeof item === "string" ? "" : (item.translation || item.tr || "");
-}
-
-function renderCloudCardModal(groups) {
-  const totalItems = groups.reduce((s, g) => s + (g.items ? g.items.length : 0), 0);
-  let html = `
-    <div class="cml-search-wrap">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input class="cml-search" id="cclSearch" placeholder="搜索分组 / 内容…" oninput="filterCloudCards()">
-    </div>
-    <div class="cml-status">本地: <b>${cards.length}</b> 条 · 云端: <b>${totalItems}</b> 条 · 点击分组预览内容，勾选导入</div>
-    <div class="cml-list" id="cclList"></div>
-    <div class="ccl-actions">
-      <button class="pill-btn" onclick="importSelectedCards()" id="cclImportBtn" disabled>导入选中</button>
-      <button class="pill-btn" onclick="selectAllCloudCards()">全选</button>
-      <button class="pill-btn" onclick="closeModal()">关闭</button>
-    </div>
-  `;
-  modal("云端字卡库", html);
-  window._cclGroups = groups;
-  window._cclSelected = new Set();
-  renderCloudCardGroupList(groups);
-
-  // 监听复选框变化
-  document.getElementById("cclList")?.addEventListener("change", updateCclImportBtn);
-}
-
-window.filterCloudCards = () => {
-  const q = (document.getElementById("cclSearch")?.value || "").trim().toLowerCase();
-  const all = window._cclGroups || [];
-  if (!q) return renderCloudCardGroupList(all);
-  const filtered = all.filter(g =>
-    g.cat.toLowerCase().includes(q) ||
-    (g.items || []).some(item => _cloudItemText(item).toLowerCase().includes(q))
-  );
-  renderCloudCardGroupList(filtered);
-};
-
-function _allCloudCardItems(groups) {
-  return _flattenCloudCards(groups);
-}
-
-window._getAllCloudCardItems = () => _allCloudCardItems(window._cclGroups || []);
-
-function renderCloudCardGroupList(groups) {
-  const el = document.getElementById("cclList");
-  if (!el) return;
-
-  if (!groups.length) {
-    el.innerHTML = '<div class="cml-empty">未找到匹配分组</div>';
-    return;
-  }
-
-  el.innerHTML = groups.map((g, gi) => {
-    const items = (g.items || []).filter(item => {
-      const t = _cloudItemText(item);
-      return t.length > 0;
-    });
-    if (!items.length) return "";
-    const preview = items.slice(0, 3).map(item => {
-      const txt = _cloudItemText(item);
-      return `<span class="ccl-preview-item">${escapeHtml(txt.length > 18 ? txt.slice(0, 18) + "…" : txt)}</span>`;
-    }).join("");
-    const tail = items.length > 3 ? `<span class="ccl-preview-more">+${items.length - 3}</span>` : "";
-
-    return `
-    <div class="ccl-group">
-      <div class="ccl-group-head" onclick="this.parentElement.classList.toggle('open')">
-        <span class="ccl-group-arrow">›</span>
-        <label class="ccl-group-check" onclick="event.stopPropagation()">
-          <input type="checkbox" class="ccl-group-cb" data-gidx="${gi}" onchange="toggleCloudCardGroup(this, '${escapeAttr(g.cat)}')">
-        </label>
-        <b class="ccl-group-name">${escapeHtml(g.cat)}</b>
-        <span class="ccl-group-cnt">${items.length} 条</span>
-      </div>
-      <div class="ccl-group-body">
-        ${items.map((item, ii) => {
-          const text = _cloudItemText(item);
-          const translation = _cloudItemTranslation(item);
-          const id = `${g.cat}::${ii}`;
-          const checked = window._cclSelected?.has(id) || false;
-          return `<label class="ccl-item-row">
-            <input type="checkbox" class="ccl-item-cb" data-id="${escapeAttr(id)}" data-cat="${escapeAttr(g.cat)}" data-text="${escapeAttr(text)}" data-tr="${escapeAttr(translation)}" ${checked ? "checked" : ""} onchange="toggleCloudCardItem(this,'${escapeAttr(id)}')">
-            <span class="ccl-item-text">${escapeHtml(text)}</span>
-            ${translation ? `<span class="ccl-item-tr">${escapeHtml(translation)}</span>` : ""}
-          </label>`;
-        }).join("")}
-      </div>
-    </div>`;
-  }).join("");
-
-  updateCclImportBtn();
-}
-
-window.toggleCloudCardGroup = (cb, cat) => {
-  const checked = cb.checked;
-  const body = cb.closest(".ccl-group")?.querySelector(".ccl-group-body");
-  if (body) {
-    body.querySelectorAll(".ccl-item-cb").forEach(itemCb => {
-      itemCb.checked = checked;
-      const id = itemCb.dataset.id;
-      if (id) { if (checked) window._cclSelected.add(id); else window._cclSelected.delete(id); }
-    });
-  }
-  updateCclImportBtn();
-};
-
-window.toggleCloudCardItem = (cb, id) => {
-  if (cb.checked) window._cclSelected.add(id);
-  else window._cclSelected.delete(id);
-  updateCclImportBtn();
-};
-
-function updateCclImportBtn() {
-  const btn = document.getElementById("cclImportBtn");
-  if (!btn) return;
-  const cnt = window._cclSelected?.size || 0;
-  btn.textContent = `导入选中 (${cnt})`;
-  btn.disabled = cnt === 0;
-}
-
-window.selectAllCloudCards = () => {
-  const all = window._cclGroups || [];
-  window._cclSelected = new Set();
-  all.forEach(g => {
-    (g.items || []).forEach((line, ii) => {
-      const id = `${g.cat}::${ii}`;
-      window._cclSelected.add(id);
-    });
-  });
-  renderCloudCardGroupList(all);
-};
-
-window.importSelectedCards = async () => {
-  if (!window._cclSelected || window._cclSelected.size === 0) { toast("未选择字卡"); return; }
-  const all = _flattenCloudCards(window._cclGroups || []);
-  const selected = [];
-  window._cclSelected.forEach(id => {
-    const [cat, idxStr] = id.split("::");
-    const idx = parseInt(idxStr);
-    // 通过 cat+idx 定位到原始分组中的项
-    const groupFound = (window._cclGroups || []).find(g => g.cat === cat);
-    if (!groupFound || !groupFound.items) return;
-    const item = groupFound.items[idx];
-    if (!item) return;
-    const text = _cloudItemText(item);
-    const translation = _cloudItemTranslation(item);
-    if (text) selected.push({ cat, text, translation });
-  });
-
-  if (!selected.length) { toast("无有效内容"); return; }
-
-  const dupes = [];
-  const fresh = [];
-  selected.forEach(item => {
-    if (cards.some(c => c.text === item.text && c.cat === item.cat)) {
-      dupes.push(item);
-    } else {
-      fresh.push(item);
-    }
-  });
-
-  let added = 0;
-  fresh.forEach(item => {
-    cards.push({ id: "c" + Date.now() + (added++), text: item.text, translation: item.translation, cat: item.cat });
-  });
-
-  await saveAll();
-  renderCards();
-  closeModal();
-  const msg = `已导入 ${added} 条`;
-  if (dupes.length) toast(`${msg}（跳过 ${dupes.length} 条重复）`);
-  else toast(msg);
-};
-
-// ═══ 云端表情包库 ═══
-const CLOUD_STICKER_LF_KEY = "cy-sticker-index";
-
-let _stickerLF = null;
-function _ensureStickerLF() {
-  if (!_stickerLF && typeof localforage !== "undefined") {
-    _stickerLF = localforage.createInstance({ name: "SilentChamberStickerCache" });
-  }
-  return _stickerLF;
-}
-
-// 将 {categories:{key:{label,items}}} 转为扁平数组 [{name,src,cat,catLabel,...}]
-function _normaliseCloudStickers(data) {
-  if (Array.isArray(data)) {
-    return data;
-  }
-  if (data.stickers && Array.isArray(data.stickers)) {
-    return data.stickers;
-  }
-  if (data.categories && typeof data.categories === "object") {
-    const result = [];
-    Object.entries(data.categories).forEach(([key, cat]) => {
-      if (!cat.items || !cat.items.length) return;
-      cat.items.forEach(item => {
-        const obj = typeof item === "object" && item !== null ? item : {};
-        result.push({ ...obj, catLabel: cat.label || key, catKey: key });
-      });
-    });
-    return result;
-  }
-  return [];
-}
-
-async function fetchCloudStickers(forceRefresh) {
-  const lf = _ensureStickerLF();
-  const indexUrl = cfg.cloudStickerIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json";
-
-  if (!forceRefresh && cloudStickerCache && cloudStickerCache.length) return cloudStickerCache;
-
-  if (!forceRefresh && lf) {
-    try {
-      const cached = await lf.getItem(CLOUD_STICKER_LF_KEY);
-      if (cached && cached.stickers && cached.stickers.length) {
-        cloudStickerCache = cached.stickers;
-        updateCloudStickerStatus(`已缓存 ${cached.stickers.length} 个 · ${new Date(cached.at).toLocaleDateString()}`);
-        return cached.stickers;
-      }
-    } catch (e) {}
-  }
-
-  updateCloudStickerStatus("正在连接…");
-  try {
-    const res = await fetch(indexUrl);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const stkData = _normaliseCloudStickers(data);
-    if (!Array.isArray(stkData) || !stkData.length) throw new Error("索引为空（暂无表情）");
-
-    cloudStickerCache = stkData;
-    if (lf) {
-      try { await lf.setItem(CLOUD_STICKER_LF_KEY, { stickers: stkData, at: Date.now() }); } catch (e) {}
-    }
-    cfg.cloudStickerLastSync = Date.now();
-    saveAllDebounced();
-    updateCloudStickerStatus(`共 ${stkData.length} 个 · 已同步`);
-    return stkData;
-  } catch (e) {
-    updateCloudStickerStatus("连接失败，使用缓存数据");
-    if (cloudStickerCache) return cloudStickerCache;
-    if (lf) {
-      try { const c = await lf.getItem(CLOUD_STICKER_LF_KEY); if (c && c.stickers) { cloudStickerCache = c.stickers; updateCloudStickerStatus(`共 ${c.stickers.length} 个 · 离线缓存`); return c.stickers; } } catch(e2) {}
-    }
-    toast("无法获取云端表情包", "warn");
-    return [];
-  }
-}
-
-function updateCloudStickerStatus(msg) {
-  const el = document.getElementById("cloudStickerStatus");
-  if (el) { el.style.display = ""; el.textContent = msg; }
-}
-
-window.refreshCloudStickers = async () => {
-  const lf = _ensureStickerLF();
-  if (lf) { try { await lf.removeItem(CLOUD_STICKER_LF_KEY); } catch(e) {} }
-  cloudStickerCache = null;
-  await fetchCloudStickers(true);
-  toast("表情库已刷新");
-};
-
-window.openCloudStickerLibrary = async () => {
-  const stks = await fetchCloudStickers();
-  if (!stks.length) { toast("云端表情无数据", "warn"); return; }
-  renderCloudStickerModal(stks);
-};
-
-function renderCloudStickerModal(stks) {
-  let html = `
-    <div class="cml-search-wrap">
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input class="cml-search" id="cskSearch" placeholder="搜索表情…" oninput="filterCloudStickers()">
-    </div>
-    <div class="cml-status">本地: <b>${stickers.length}</b> 个 · 云端: <b>${stks.length}</b> 个</div>
-    <div class="csk-grid" id="cskGrid"></div>
-    <div class="ccl-actions">
-      <button class="pill-btn" onclick="importSelectedStickers()" id="cskImportBtn" disabled>导入选中</button>
-      <button class="pill-btn" onclick="selectAllCloudStickers()">全选</button>
-      <button class="pill-btn" onclick="closeModal()">关闭</button>
-    </div>
-  `;
-  modal("云端表情库", html);
-  window._cskData = stks;
-  window._cskSelected = new Set();
-  renderCloudStickerGrid(stks);
-  document.getElementById("cskGrid")?.addEventListener("change", updateCskImportBtn);
-}
-
-window.filterCloudStickers = () => {
-  const q = (document.getElementById("cskSearch")?.value || "").trim().toLowerCase();
-  const all = window._cskData || [];
-  if (!q) return renderCloudStickerGrid(all);
-  renderCloudStickerGrid(all.filter(s =>
-    (_stickerName(s) || "").toLowerCase().includes(q) ||
-    (s.catLabel || "").toLowerCase().includes(q)
-  ));
-};
-
-// 从云表情索引 URL 推导出图片资源的基础路径（仓库根目录）
-// 例如 https://…/cy-chat/main/Meme/meme.json → https://…/cy-chat/main/
-function _cloudStickerBase() {
-  const idx = cfg.cloudStickerIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json";
-  // meme.json 内的 url 字段是相对于仓库根的（如 Meme/images/xxx.jpg），所以取 /main/ 层级
-  const m = idx.match(/^(.+\/[^\/]+\/)Meme\/meme\.json$/);
-  if (m) return m[1];
-  // 兜底：去掉 meme.json，再退两层目录
-  return idx.replace(/Meme\/meme\.json$/, "");
-}
-function _stickerSrc(s) {
-  const raw = s.src || s.url || "";
-  if (!raw || /^https?:\/\//.test(raw)) return raw;
-  // 相对路径：拼到 Meme/ 目录下
-  return _cloudStickerBase() + raw;
-}
-function _stickerName(s) { return s.name || s.title || s.label || "未命名"; }
-
-function renderCloudStickerGrid(stks) {
-  const el = document.getElementById("cskGrid");
-  if (!el) return;
-  if (!stks.length) { el.innerHTML = '<div class="cml-empty">未找到表情</div>'; return; }
-
-  el.innerHTML = stks.map((s, i) => {
-    const src = _stickerSrc(s);
-    const name = _stickerName(s);
-    const cat = s.catLabel || "";
-    const id = `csk_${i}`;
-    const checked = window._cskSelected?.has(id) || false;
-    return `<div class="csk-item">
-      <div class="csk-img-wrap">
-        <img src="${escapeHtml(src)}" loading="lazy" onerror="this.parentElement.classList.add('broken')">
-        ${!src ? '<div class="csk-broken">无图</div>' : ""}
-      </div>
-      <div class="csk-name">${escapeHtml(name)}</div>
-      ${cat ? `<div class="csk-cat">${escapeHtml(cat)}</div>` : ""}
-      <label class="csk-check">
-        <input type="checkbox" data-id="${escapeAttr(id)}" data-src="${escapeAttr(src)}" ${checked ? "checked" : ""} onchange="toggleCloudStickerItem(this,'${escapeAttr(id)}')">
-        <span>${checked ? "已选" : "选择"}</span>
-      </label>
-    </div>`;
-  }).join("");
-  updateCskImportBtn();
-}
-
-window.toggleCloudStickerItem = (cb, id) => {
-  if (cb.checked) window._cskSelected.add(id);
-  else window._cskSelected.delete(id);
-  updateCskImportBtn();
-};
-
-function updateCskImportBtn() {
-  const btn = document.getElementById("cskImportBtn");
-  if (!btn) return;
-  const cnt = window._cskSelected?.size || 0;
-  btn.textContent = `导入选中 (${cnt})`;
-  btn.disabled = cnt === 0;
-}
-
-window.selectAllCloudStickers = () => {
-  window._cskSelected = new Set();
-  (window._cskData || []).forEach((s, i) => window._cskSelected.add(`csk_${i}`));
-  renderCloudStickerGrid(window._cskData || []);
-};
-
-window.importSelectedStickers = async () => {
-  if (!window._cskSelected || window._cskSelected.size === 0) { toast("未选择表情"); return; }
-  const data = window._cskData || [];
-  const existing = new Set(stickers.map(s => s.src));
-  let added = 0, skipped = 0;
-
-  window._cskSelected.forEach(id => {
-    const idx = parseInt(id.replace("csk_", ""));
-    const s = data[idx];
-    if (!s) return;
-    const src = _stickerSrc(s);
-    if (!src) return;
-    if (existing.has(src)) { skipped++; return; }
-    stickers.push({ id: "sk" + Date.now() + added, src, type: "url", shielded: false, addedAt: Date.now() });
-    existing.add(src);
-    added++;
-  });
-
-  await saveAll();
-  renderStickers();
-  closeModal();
-  toast(skipped ? `已导入 ${added} 个（跳过 ${skipped} 个重复）` : `已导入 ${added} 个`);
-};
-
-// ═══ 字卡 JSON 导入/导出 ═══
-window.openCardJsonIO = () => {
-  modal("JSON", `<div class="pill-btn-group">
-    <button class="pill-btn" onclick="exportCardsJson()">导出 JSON</button>
-    <button class="pill-btn" onclick="document.getElementById('fpCardJson').click();closeModal();">导入 JSON</button>
-  </div>`);
-};
-
-window.exportCardsJson = () => {
-  const data = cards.map(c => ({ text: c.text, translation: c.translation || "", cat: c.cat }));
-  const json = JSON.stringify(data, null, 2);
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([json], { type: "application/json;charset=utf-8" }));
-  a.download = `字卡_${Date.now()}.json`;
-  a.click();
-  closeModal();
-};
-
-function onPickCardJson(e) {
-  const f = e.target.files[0]; if (!f) return;
-  const r = new FileReader();
-  r.onload = async ev => {
-    try {
-      const data = JSON.parse(ev.target.result);
-      let parsed = [];
-      if (Array.isArray(data)) {
-        // 直接数组 [{text, translation, cat}]
-        parsed = data.map((item, i) => ({
-          id: "c" + Date.now() + i,
-          text: item.text || item.t || "",
-          translation: item.translation || item.tr || "",
-          cat: item.cat || item.category || item.group || "未命名"
-        })).filter(c => c.text);
-      } else if (data.cards && Array.isArray(data.cards)) {
-        // { cards: [...] } 包装格式
-        parsed = data.cards.map((item, i) => ({
-          id: "c" + Date.now() + i,
-          text: item.text || item.t || "",
-          translation: item.translation || item.tr || "",
-          cat: item.cat || item.category || item.group || "未命名"
-        })).filter(c => c.text);
-      } else if (data.groups && Array.isArray(data.groups)) {
-        // { groups: [{cat, items:["句子","句子 翻译 译文"]}] } 云端格式
-        parsed = [];
-        data.groups.forEach(g => {
-          (g.items || []).forEach((line, i) => {
-            const m = line.match(/^(.+?)\s*翻译\s*(.+)$/);
-            if (m) parsed.push({ id: "c" + Date.now() + parsed.length, text: m[1].trim(), translation: m[2].trim(), cat: g.cat });
-            else parsed.push({ id: "c" + Date.now() + parsed.length, text: line.trim(), translation: "", cat: g.cat });
-          });
-        });
-      } else {
-        throw new Error("无法识别的 JSON 结构");
-      }
-      if (!parsed.length) { toast("JSON 中无有效数据", "warn"); return; }
-      await importWithMergePrompt(parsed);
-    } catch (e) {
-      toast("JSON 解析失败: " + e.message, "warn");
-      console.error(e);
-    }
-  };
-  r.readAsText(f);
-}
-
-// ─── 更新 TXT/JSON IO 弹窗 ───
-window.openTxtIO = () => {
-  modal("导入/导出", `<div class="pill-btn-group">
-    <button class="pill-btn" onclick="exportCards()">导出 TXT</button>
-    <button class="pill-btn" onclick="document.getElementById('fpCard').click();closeModal();">导入 TXT</button>
-    <button class="pill-btn" onclick="exportCardsJson()">导出 JSON</button>
-    <button class="pill-btn" onclick="document.getElementById('fpCardJson').click();closeModal();">导入 JSON</button>
-  </div>`);
-};
-
 // ─── Welcome ───
-// ─── Welcome canvas particles + typographic animation ───
 let _welcomeRaf = null;
+// ─── Welcome canvas particles + typographic animation ───
 function initWelcomeParticles() {
   const canvas = document.getElementById("wCanvas");
   if (!canvas) return;
@@ -3291,8 +2116,7 @@ function initWelcomeParticles() {
   const isDark = document.documentElement.getAttribute("data-theme") !== "light";
   const color = isDark ? "255,255,255" : "0,0,0";
 
-  // ⚡ 降低粒子数：25 粒子 → 300 次/帧比较（原 55 粒子 → 1485 次）
-  const pts = Array.from({ length: 25 }, () => ({
+  const pts = Array.from({ length: 55 }, () => ({
     x: Math.random() * canvas.width,
     y: Math.random() * canvas.height,
     r: Math.random() * 1.2 + .3,
@@ -3314,17 +2138,16 @@ function initWelcomeParticles() {
       ctx.fillStyle = `rgba(${color},${p.o})`;
       ctx.fill();
     });
-    // ⚡ 缩小连线的距离阈值，减少绘制调用
     for (let i = 0; i < pts.length; i++) {
       for (let j = i + 1; j < pts.length; j++) {
         const dx = pts[i].x - pts[j].x;
         const dy = pts[i].y - pts[j].y;
         const d  = Math.sqrt(dx*dx + dy*dy);
-        if (d < 55) {
+        if (d < 80) {
           ctx.beginPath();
           ctx.moveTo(pts[i].x, pts[i].y);
           ctx.lineTo(pts[j].x, pts[j].y);
-          ctx.strokeStyle = `rgba(${color},${.10 * (1 - d/55)})`;
+          ctx.strokeStyle = `rgba(${color},${.10 * (1 - d/80)})`;
           ctx.lineWidth = .5;
           ctx.stroke();
         }
@@ -3333,11 +2156,10 @@ function initWelcomeParticles() {
     _welcomeRaf = requestAnimationFrame(draw);
   }
   draw();
-  // ⚡ 欢迎页关闭时（点击或自动）停止 canvas 动画
-  const stopWelcomeRaf = () => {
-    if (_welcomeRaf) { cancelAnimationFrame(_welcomeRaf); _welcomeRaf = null; }
-  };
-  document.getElementById("welcome").addEventListener("click", stopWelcomeRaf, { once: true });
+  document.getElementById("welcome").addEventListener("click", () => {
+    cancelAnimationFrame(_welcomeRaf);
+    _welcomeRaf = null;
+  }, { once: true });
 
   // ── 字符排版初始化 ──
   buildTypoWelcome();
@@ -3539,7 +2361,7 @@ function buildTypoWelcome() {
 }
 // 3秒后自动进入，无需点击
 setTimeout(()=>{ const w=document.getElementById("welcome"); if(!w||w.classList.contains("gone"))return; w.classList.add("gone"); setTimeout(()=>w.style.display="none",800); if(_welcomeRaf){cancelAnimationFrame(_welcomeRaf);_welcomeRaf=null;} chime(); },3000);
-document.getElementById("welcome").addEventListener("click",()=>{ const w=document.getElementById("welcome"); if(w.classList.contains("gone"))return; w.classList.add("gone"); setTimeout(()=>w.style.display="none",800); chime(); });
+document.getElementById("welcome").addEventListener("click",()=>{ const w=document.getElementById("welcome"); if(w.classList.contains("gone"))return; w.classList.add("gone"); setTimeout(()=>w.style.display="none",800); if(_welcomeRaf){cancelAnimationFrame(_welcomeRaf);_welcomeRaf=null;} chime(); });
 
 document.addEventListener("DOMContentLoaded", init);
 window.openFontModal = () => {
@@ -3622,11 +2444,9 @@ function applyCustomHomeStyles() {
       }
     });
   }
-  if (styleEl) styleEl.textContent = css;
+  if (styleEl) styleEl.innerHTML = css;
 
   // JS（沙盒执行，报错不崩溃）
-  // ⚠ 安全警告：以下 new Function 允许执行任意 JavaScript 代码，仅用于受信任的配置来源。
-  // 请勿执行来源不明的 customHomeJs 脚本，否则存在 XSS 攻击风险。
   if (cfg.customHomeJs) {
     try { new Function(cfg.customHomeJs)(); } catch(e) { toast("JS 错误：" + e.message); }
   }
@@ -3807,6 +2627,7 @@ window.checkLock = () => {
   // 将输入的字符串转化为异或字符比对（混淆密码机制，代码中绝不包含明文答案）
   const hashed = Array.from(val.toLowerCase()).map(c => String.fromCharCode(c.charCodeAt(0) ^ 42)).join("");
   
+  // "RLISFP" 即为 "xfcylz" 经 XOR 42 加密后的哈希值
   if (hashed === "RLISFP") {
     localStorage.setItem("sc_authed", "true");
     document.documentElement.classList.add("is-authenticated");
@@ -4349,4 +3170,994 @@ window.finishSurveyFill = async () => {
   closeSurveyFull();
   renderSurveys();
   toast("问卷已完成");
+};
+
+// ═══════════════════════════════════════
+//  🎵 云端音乐系统 · 轻量化缓存 + 随机播放 + 歌词同步
+// ═══════════════════════════════════════
+
+// ─── 播放器状态 ───
+// musicAudio 已在行91声明，此处复用
+let _shufflePool = [], _shuffleIdx = -1, _lrcLines = [], _lrcTimer = null;
+let _lrcTextCache = new Map(); // Map<lrcUrl, lrcText> 不污染 song 对象
+let _cloudPreloadDone = false;
+let _progressTimer = null; // timeupdate 间隔定时器
+
+// ─── 云端曲库 ───
+const CLOUD_MUSIC_LF_KEY = "cy-music-idx";
+const CLOUD_MUSIC_LF_META = "cy-music-meta";
+const CLOUD_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h 过期
+
+let _musicLF = null;
+function _ensureMusicLF() {
+  if (!_musicLF && typeof localforage !== "undefined") {
+    _musicLF = localforage.createInstance({ name: "scMusic" });
+  }
+  return _musicLF;
+}
+
+/* 轻量化索引结构
+   云端 index.json 格式: [{name:"歌名 - 歌手", mp3:"url", lrc:"url"}, …]
+   lrc 是 .lrc 歌词文件 URL，需要 fetch 后才是 LRC 文本
+   本地缓存只保留: {n, u, l} — name, url, lrcUrl 压缩字段名 */
+function _packSong(s) { return { n: s.name, u: s.mp3, l: s.lrc || "" }; }
+function _unpackSong(s) { return { name: s.n, mp3: s.u, lrc: s.l || "" }; }
+
+// 从云端获取 index.json（三层轻量化缓存）
+async function fetchCloudIndex(forceRefresh) {
+  const lf = _ensureMusicLF();
+
+  // ① 内存缓存
+  if (!forceRefresh && cloudSongCache && cloudSongCache.length) return cloudSongCache;
+
+  // ② localforage 缓存 + TTL 检查
+  if (!forceRefresh && lf) {
+    try {
+      const meta = await lf.getItem(CLOUD_MUSIC_LF_META);
+      if (meta && meta.at && (Date.now() - meta.at < CLOUD_CACHE_TTL)) {
+        const packed = await lf.getItem(CLOUD_MUSIC_LF_KEY);
+        if (packed && packed.length) {
+          cloudSongCache = packed.map(_unpackSong);
+          updateCloudStatus(`已缓存 ${packed.length} 首 · ${new Date(meta.at).toLocaleDateString()}`);
+          return cloudSongCache;
+        }
+      }
+    } catch (e) { /* fall through */ }
+  }
+
+  // ③ 网络获取
+  updateCloudStatus("正在连接云端曲库…");
+  try {
+    const indexUrl = cfg.cloudMusicIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-music/main/index.json";
+    const res = await fetch(indexUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const raw = await res.json();
+    if (!Array.isArray(raw) || !raw.length) throw new Error("索引为空");
+
+    cloudSongCache = raw;
+
+    // 轻量化写入 localforage
+    if (lf) {
+      const packed = raw.map(_packSong);
+      try {
+        await lf.setItem(CLOUD_MUSIC_LF_KEY, packed);
+        await lf.setItem(CLOUD_MUSIC_LF_META, { at: Date.now(), count: packed.length });
+      } catch (e) {}
+    }
+
+    cfg.cloudMusicLastSync = Date.now();
+    saveAllDebounced();
+    updateCloudStatus(`共 ${raw.length} 首 · 已同步`);
+    return raw;
+  } catch (e) {
+    updateCloudStatus("连接失败，使用缓存");
+    if (cloudSongCache) return cloudSongCache;
+    if (lf) {
+      try {
+        const packed = await lf.getItem(CLOUD_MUSIC_LF_KEY);
+        if (packed && packed.length) { cloudSongCache = packed.map(_unpackSong); updateCloudStatus(`离线 ${packed.length} 首`); return cloudSongCache; }
+      } catch(e2) {}
+    }
+    toast("无法获取云端曲库", "warn");
+    return [];
+  }
+}
+
+function updateCloudStatus(msg) {
+  const el = document.getElementById("cloudMusicStatus");
+  if (el) { el.style.display = ""; el.textContent = msg; }
+}
+
+// ─── 后台预加载曲库（首页加载后 3s 空闲时触发）───
+function _backgroundPreload() {
+  if (_cloudPreloadDone) return;
+  setTimeout(() => {
+    if (cloudSongCache && cloudSongCache.length) { _cloudPreloadDone = true; return; }
+    try { fetchCloudIndex().then(() => { _cloudPreloadDone = true; }).catch(() => {}); } catch(e) {}
+  }, 3000);
+}
+
+// ─── 随机播放池 ───
+async function _ensureShufflePool() {
+  if (!cloudSongCache || !cloudSongCache.length) {
+    await fetchCloudIndex();
+  }
+  if (cloudSongCache && cloudSongCache.length) {
+    _shufflePool = [...cloudSongCache];
+    // Fisher-Yates 洗牌
+    for (let i = _shufflePool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [_shufflePool[i], _shufflePool[j]] = [_shufflePool[j], _shufflePool[i]];
+    }
+    _shuffleIdx = -1;
+  }
+}
+
+function _loadCurrentShuffleSong() {
+  if (!_shufflePool.length || _shuffleIdx < 0 || _shuffleIdx >= _shufflePool.length) return null;
+  return _shufflePool[_shuffleIdx];
+}
+
+// ─── LRC 歌词解析 ───
+function _parseLRC(lrc) {
+  const lines = [];
+  if (!lrc) return lines;
+  const parts = lrc.split(/\r?\n/);
+  const regex = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/;
+  for (const p of parts) {
+    const m = p.match(regex);
+    if (!m) continue;
+    const min = parseInt(m[1], 10);
+    const sec = parseInt(m[2], 10);
+    const ms = m[3] ? parseInt(m[3].padEnd(3, "0"), 10) : 0;
+    const time = min * 60 + sec + ms / 1000;
+    const text = p.replace(regex, "").trim();
+    if (text) lines.push({ time, text });
+  }
+  lines.sort((a, b) => a.time - b.time);
+  return lines;
+}
+
+// ─── 异步拉取远程 LRC 文件 ───
+async function _fetchRemoteLrc(url) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return "";
+    return await res.text();
+  } catch (e) { return ""; }
+}
+
+function _syncLRC(currentTime) {
+  // 找当前歌词行
+  let activeIdx = -1;
+  if (_lrcLines.length) {
+    for (let i = _lrcLines.length - 1; i >= 0; i--) {
+      if (currentTime >= _lrcLines[i].time) { activeIdx = i; break; }
+    }
+  }
+
+  // ── 主页面音乐卡片歌词行（只在播放且有歌词时显示）──
+  const elCard = document.getElementById("mCardLrcText");
+  if (elCard && musicAudio && !musicAudio.paused) {
+    if (activeIdx >= 0) {
+      const txt = _lrcLines[activeIdx].text;
+      if (elCard.textContent !== txt) {
+        elCard.textContent = txt;
+      }
+    }
+  }
+
+  // ── 播放器窗口歌词同步 ──
+  const el = document.getElementById("mpLrcBody");
+  if (!el || !_lrcLines.length) return;
+  const items = el.querySelectorAll(".mp-lrc-line");
+  items.forEach((item, i) => {
+    item.classList.toggle("active", i === activeIdx);
+    if (i === activeIdx && activeIdx >= 0) {
+      item.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  });
+}
+
+// ─── 封面更新 ───
+function _updateMusicCardUI(song) {
+  if (!song) return;
+  const { title, artist } = _parseCloudSongName(song.name);
+  // 同步主页文字
+  const elTitle = document.querySelector('.music-card .m-title');
+  const elSub = document.querySelector('.music-card .m-sub');
+  if (elTitle) elTitle.textContent = title;
+  if (elSub) elSub.textContent = artist;
+  // 重置歌词行
+  const elLrcTxt = document.getElementById("mCardLrcText");
+  if (elLrcTxt) elLrcTxt.textContent = "";
+  document.getElementById("musicCard")?.classList.remove("has-lrc");
+  // 同步播放器窗口
+  const pTitle = document.getElementById("mpTitle");
+  const pArtist = document.getElementById("mpArtist");
+  if (pTitle) pTitle.textContent = title;
+  if (pArtist) pArtist.textContent = artist;
+  // 同步 cfg
+  cfg.musicTitle = title;
+  cfg.musicArtist = artist;
+}
+
+// ─── 播放核心：随机切歌 ───
+async function _playNextRandom() {
+  await _ensureShufflePool();
+  if (!_shufflePool.length) { toast("曲库无数据", "warn"); return; }
+  _shuffleIdx++;
+  if (_shuffleIdx >= _shufflePool.length) {
+    // 播完一轮，重新洗牌
+    for (let i = _shufflePool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [_shufflePool[i], _shufflePool[j]] = [_shufflePool[j], _shufflePool[i]];
+    }
+    _shuffleIdx = 0;
+  }
+  const song = _loadCurrentShuffleSong();
+  if (!song) return;
+
+  // 清理旧播放器
+  if (musicAudio) { musicAudio.pause(); musicAudio.src = ""; musicAudio.load(); musicAudio = null; }
+  clearInterval(_lrcTimer);
+
+  // 更新 UI
+  _updateMusicCardUI(song);
+  // lrc 字段是 .lrc 文件 URL，通过独立 Map 缓存文本，不污染 song 对象
+  let lrcText = "";
+  if (song.lrc) {
+    if (song.lrc.startsWith("http")) {
+      lrcText = _lrcTextCache.get(song.lrc);
+      if (lrcText === undefined) {
+        lrcText = await _fetchRemoteLrc(song.lrc);
+        if (lrcText) _lrcTextCache.set(song.lrc, lrcText);
+      }
+    } else {
+      lrcText = song.lrc; // 兼容旧索引中已混入的文本
+    }
+  }
+  _lrcLines = _parseLRC(lrcText);
+  // 有歌词时展开卡片歌词列，无歌词时保持折叠
+  document.getElementById("musicCard")?.classList.toggle("has-lrc", _lrcLines.length > 0);
+  // 渲染播放器歌词
+  _renderLrcBody();
+
+  // 创建新 Audio
+  updateCloudStatus("载入中…");
+  musicAudio = new Audio(song.mp3);
+  musicAudio._currentSong = song;
+  musicAudio.addEventListener("play", () => {
+    updatePlayIcon(true);
+    updateCloudStatus("");
+    _lrcTimer = setInterval(() => {
+      if (musicAudio) _syncLRC(musicAudio.currentTime);
+    }, 300);
+    _startProgressTimer();
+  });
+  musicAudio.addEventListener("pause", () => {
+    updatePlayIcon(false);
+    clearInterval(_lrcTimer);
+    clearInterval(_progressTimer);
+    const elLrc = document.getElementById("mCardLrcText");
+    if (elLrc) elLrc.textContent = "";
+  });
+  musicAudio.addEventListener("ended", () => { clearInterval(_progressTimer); _playNextRandom(); });
+  musicAudio.addEventListener("error", () => {
+    toast("加载失败，跳过当前曲目", "warn");
+    updatePlayIcon(false);
+    clearInterval(_lrcTimer);
+    clearInterval(_progressTimer);
+    const failedAudio = musicAudio;
+    setTimeout(() => { if (musicAudio === failedAudio) _playNextRandom(); }, 1500);
+  });
+  musicAudio.addEventListener("canplaythrough", () => {
+    updateCloudStatus("");
+    // 设置总时长显示
+    const dtEl = document.getElementById("mpDurTime");
+    if (dtEl && isFinite(musicAudio.duration)) dtEl.textContent = _formatTime(musicAudio.duration);
+    const pg = document.getElementById("mpProgress");
+    if (pg && isFinite(musicAudio.duration)) pg.max = 100;
+  }, { once: true });
+
+  try { await musicAudio.play(); } catch(e) {
+    if (e.name === "NotAllowedError") toast("浏览器拦截了自动播放，请再点一次", "warn");
+  }
+}
+
+// ─── 音乐播放窗口（歌词面板）───
+function _formatTime(sec) {
+  if (!isFinite(sec) || sec < 0) return "00:00";
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+}
+
+window.openMusicPlayer = async () => {
+  await _ensureShufflePool();
+  const currentSong = musicAudio?._currentSong || null;
+  const title = currentSong ? _parseCloudSongName(currentSong.name).title : (cfg.musicTitle || "未选择");
+  const artist = currentSong ? _parseCloudSongName(currentSong.name).artist : (cfg.musicArtist || "—");
+
+  _lrcLines = [];
+  if (currentSong?.lrc) {
+    let lrcText = currentSong.lrc;
+    if (lrcText.startsWith("http")) {
+      lrcText = _lrcTextCache.get(lrcText);
+      if (lrcText === undefined) {
+        lrcText = await _fetchRemoteLrc(currentSong.lrc);
+        if (lrcText) _lrcTextCache.set(currentSong.lrc, lrcText);
+      }
+    }
+    _lrcLines = _parseLRC(lrcText);
+  } else if (cfg.musicLrc) {
+    let lrcText = cfg.musicLrc;
+    if (lrcText.startsWith("http")) lrcText = await _fetchRemoteLrc(lrcText);
+    _lrcLines = _parseLRC(lrcText);
+  }
+
+  document.getElementById("mpTitle").textContent = title;
+  document.getElementById("mpArtist").textContent = artist;
+  document.getElementById("mpCount").textContent = _shufflePool.length ? `${_shufflePool.length} 首` : "";
+  _renderLrcBody();
+  // 同步进度条
+  if (musicAudio && isFinite(musicAudio.duration)) {
+    const pct = (musicAudio.currentTime / musicAudio.duration) * 100;
+    const pg = document.getElementById("mpProgress");
+    if (pg) pg.value = pct;
+    const ctEl = document.getElementById("mpCurTime");
+    const dtEl = document.getElementById("mpDurTime");
+    if (ctEl) ctEl.textContent = _formatTime(musicAudio.currentTime);
+    if (dtEl) dtEl.textContent = _formatTime(musicAudio.duration);
+  }
+  document.getElementById("musicPlayer").classList.add("on");
+  // 同步播放按钮
+  updatePlayIcon(musicAudio && !musicAudio.paused);
+  if (musicAudio && !musicAudio.paused && _lrcLines.length) {
+    _syncLRC(musicAudio.currentTime);
+  }
+};
+window.closeMusicPlayer = () => {
+  document.getElementById("musicPlayer").classList.remove("on");
+  _lrcLines = [];
+  clearInterval(_progressTimer);
+};
+
+// 进度条拖拽跳跃
+window.mpSeek = (pct) => {
+  if (!musicAudio || !isFinite(musicAudio.duration)) return;
+  const t = (pct / 100) * musicAudio.duration;
+  musicAudio.currentTime = t;
+  // 立即刷新显示
+  const ctEl = document.getElementById("mpCurTime");
+  if (ctEl) ctEl.textContent = _formatTime(t);
+};
+
+function _startProgressTimer() {
+  clearInterval(_progressTimer);
+  _progressTimer = setInterval(() => {
+    if (!musicAudio || !isFinite(musicAudio.duration)) return;
+    const pct = (musicAudio.currentTime / musicAudio.duration) * 100;
+    const pg = document.getElementById("mpProgress");
+    if (pg) pg.value = pct;
+    const ctEl = document.getElementById("mpCurTime");
+    if (ctEl) ctEl.textContent = _formatTime(musicAudio.currentTime);
+  }, 250);
+}
+
+function _renderLrcBody() {
+  const el = document.getElementById("mpLrcBody");
+  if (!el) return;
+  if (!_lrcLines.length) {
+    el.innerHTML = '<div class="mp-lrc-empty">暂无歌词</div>';
+    return;
+  }
+  el.innerHTML = _lrcLines.map(l => `<div class="mp-lrc-line">${escapeHtml(l.text)}</div>`).join("");
+}
+
+// 播放面板：播放/暂停
+window.mpTogglePlay = () => {
+  if (musicAudio && !musicAudio.paused) { musicAudio.pause(); }
+  else if (musicAudio && musicAudio.paused) { musicAudio.play().catch(() => {}); }
+  else { _playNextRandom(); }
+};
+
+// ─── 云端曲库浏览弹窗 ───
+window.refreshCloudIndex = async () => {
+  const lf = _ensureMusicLF();
+  if (lf) {
+    try { await lf.removeItem(CLOUD_MUSIC_LF_KEY); } catch(e) {}
+    try { await lf.removeItem(CLOUD_MUSIC_LF_META); } catch(e) {}
+  }
+  cloudSongCache = null;
+  _shufflePool = []; _shuffleIdx = -1;
+  await fetchCloudIndex(true);
+  toast("曲库已刷新");
+};
+
+window.openCloudMusicLibrary = async () => {
+  const songs = await fetchCloudIndex();
+  if (!songs.length) { toast("曲库无数据", "warn"); return; }
+  renderCloudModal(songs);
+};
+
+function _parseCloudSongName(name) {
+  const idx = name.lastIndexOf("-");
+  if (idx > 0) return { title: name.substring(0, idx).trim(), artist: name.substring(idx + 1).trim() };
+  return { title: name, artist: "" };
+}
+
+function renderCloudModal(songs) {
+  const html = `
+    <div class="cml-search-wrap">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="cml-search" id="cmlSearch" placeholder="搜索歌曲 / 歌手…" oninput="filterCloudSongs()">
+    </div>
+    <div class="cml-status" id="cmlStatus">当前: <b>${escapeHtml(cfg.musicTitle || "未选择")}</b>${cfg.musicArtist ? " — " + escapeHtml(cfg.musicArtist) : ""}</div>
+    <div class="cml-list" id="cmlList"></div>
+  `;
+  modal("云端曲库", html);
+  window._cmlSongs = songs;
+  renderCloudSongList(songs);
+}
+
+window.filterCloudSongs = () => {
+  const q = (document.getElementById("cmlSearch")?.value || "").trim().toLowerCase();
+  const all = window._cmlSongs || [];
+  renderCloudSongList(q ? all.filter(s => s.name.toLowerCase().includes(q)) : all);
+};
+
+function renderCloudSongList(songs) {
+  const el = document.getElementById("cmlList");
+  if (!el) return;
+  if (!songs.length) { el.innerHTML = '<div class="cml-empty">未找到匹配歌曲</div>'; return; }
+
+  const currentUrl = cfg.musicUrl || "";
+  el.innerHTML = songs.map((s, i) => {
+    const { title, artist } = _parseCloudSongName(s.name);
+    const isActive = currentUrl === s.mp3;
+    return `
+      <div class="cml-item${isActive ? " active" : ""}" onclick="selectCloudSong(${i})" data-idx="${i}">
+        <div class="cml-item-left">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
+          <div class="cml-item-info">
+            <div class="cml-item-title">${escapeHtml(title)}</div>
+            <div class="cml-item-artist">${escapeHtml(artist)}</div>
+          </div>
+        </div>
+        <div class="cml-item-check">${isActive ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>' : ""}</div>
+      </div>`;
+  }).join("");
+  window._cmlFiltered = songs;
+}
+
+window.selectCloudSong = async (filteredIdx) => {
+  const obj = window._cmlFiltered ? window._cmlFiltered[filteredIdx] : undefined;
+  if (!obj) return;
+  const { title, artist } = _parseCloudSongName(obj.name);
+  cfg.musicUrl = obj.mp3;
+  cfg.musicTitle = title;
+  cfg.musicArtist = artist;
+  // 只存 URL，不存歌词文本（文本由 _lrcTextCache 管理）
+  cfg.musicLrc = (obj.lrc && obj.lrc.startsWith("http")) ? obj.lrc : "";
+  texts.l1_song = title;
+  texts.l1_artist = artist;
+  await saveAll();
+  syncUI();
+  if (window._cmlSongs) renderCloudSongList(window._cmlSongs);
+  closeModal();
+  toast(`已选择: ${title}`);
+  // 切换当前播放
+  if (musicAudio && !musicAudio.paused) {
+    musicAudio.pause(); musicAudio = null;
+    _shufflePool = [obj]; _shuffleIdx = -1;
+    _playNextRandom();
+  }
+};
+
+// ═══ 云端字卡库 ═══
+const CLOUD_CARD_LF_KEY = "cy-card-index";
+
+let _cardLF = null;
+function _ensureCardLF() {
+  if (!_cardLF && typeof localforage !== "undefined") {
+    _cardLF = localforage.createInstance({ name: "SilentChamberCardCache" });
+  }
+  return _cardLF;
+}
+
+// 将 {categories:{key:{label,items}}} 转为扁平数组 [{cat:label,key,items}]]
+function _normaliseCloudCards(data) {
+  if (Array.isArray(data)) {
+    // 旧格式直接数组: [{cat,items}] 或 [{cat,items:[{id,text}]}]
+    return data;
+  }
+  if (data.cards && Array.isArray(data.cards)) {
+    return data.cards; // {cards:[{cat,items}]} 包装
+  }
+  if (data.groups && Array.isArray(data.groups)) {
+    return data.groups; // {groups:[{cat,items}]} 包装
+  }
+  if (data.categories && typeof data.categories === "object") {
+    // 新格式: {categories:{key:{label,items:[{id,text,tags}]}}}
+    const result = [];
+    Object.entries(data.categories).forEach(([key, cat]) => {
+      if (!cat.items || !cat.items.length) return;
+      result.push({ cat: cat.label || key, key, items: cat.items });
+    });
+    return result;
+  }
+  return [];
+}
+
+function _flattenCloudCards(groups) {
+  const all = [];
+  groups.forEach(g => {
+    (g.items || []).forEach(item => {
+      const text = typeof item === "string" ? item : (item.text || "");
+      const translation = typeof item === "string" ? "" : (item.translation || item.tr || "");
+      if (text) all.push({ cat: g.cat, text, translation });
+    });
+  });
+  return all;
+}
+
+async function fetchCloudCards(forceRefresh) {
+  const lf = _ensureCardLF();
+  const indexUrl = cfg.cloudCardIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Word/word.json";
+
+  if (!forceRefresh && cloudCardCache && cloudCardCache.length) return cloudCardCache;
+
+  if (!forceRefresh && lf) {
+    try {
+      const cached = await lf.getItem(CLOUD_CARD_LF_KEY);
+      if (cached && cached.cards && cached.cards.length) {
+        cloudCardCache = cached.cards;
+        updateCloudCardStatus(`已缓存 ${cached.cards.length} 组 · ${new Date(cached.at).toLocaleDateString()}`);
+        return cached.cards;
+      }
+    } catch (e) {}
+  }
+
+  updateCloudCardStatus("正在连接…");
+  try {
+    const res = await fetch(indexUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const cardsData = _normaliseCloudCards(data);
+    if (!Array.isArray(cardsData) || !cardsData.length) throw new Error("索引为空");
+
+    cloudCardCache = cardsData;
+    if (lf) {
+      try { await lf.setItem(CLOUD_CARD_LF_KEY, { cards: cardsData, at: Date.now() }); } catch (e) {}
+    }
+    cfg.cloudCardLastSync = Date.now();
+    saveAllDebounced();
+    const totalItems = cardsData.reduce((s, g) => s + (g.items ? g.items.length : 0), 0);
+    updateCloudCardStatus(`共 ${cardsData.length} 组 · ${totalItems} 条 · 已同步`);
+    return cardsData;
+  } catch (e) {
+    updateCloudCardStatus("连接失败，使用缓存数据");
+    if (cloudCardCache) return cloudCardCache;
+    if (lf) {
+      try { const c = await lf.getItem(CLOUD_CARD_LF_KEY); if (c && c.cards) { cloudCardCache = c.cards; updateCloudCardStatus(`共 ${c.cards.length} 组 · 离线缓存`); return c.cards; } } catch(e2) {}
+    }
+    toast("无法获取云端字卡", "warn");
+    return [];
+  }
+}
+
+function updateCloudCardStatus(msg) {
+  const el = document.getElementById("cloudCardStatus");
+  if (el) { el.style.display = ""; el.textContent = msg; }
+}
+
+window.refreshCloudCards = async () => {
+  const lf = _ensureCardLF();
+  if (lf) { try { await lf.removeItem(CLOUD_CARD_LF_KEY); } catch(e) {} }
+  cloudCardCache = null;
+  await fetchCloudCards(true);
+  toast("字卡库已刷新");
+};
+
+window.openCloudCardLibrary = async () => {
+  const groups = await fetchCloudCards();
+  if (!groups.length) { toast("云端字卡无数据", "warn"); return; }
+  renderCloudCardModal(groups);
+};
+
+// 分组数据结构: { cat:"显示名", key:"内部键", items:[{id,text,tags}]|["字符串"] }
+function _cloudItemText(item) {
+  return typeof item === "string" ? item.trim() : (item.text || "").trim();
+}
+function _cloudItemTranslation(item) {
+  return typeof item === "string" ? "" : (item.translation || item.tr || "");
+}
+
+function renderCloudCardModal(groups) {
+  const totalItems = groups.reduce((s, g) => s + (g.items ? g.items.length : 0), 0);
+  let html = `
+    <div class="cml-search-wrap">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="cml-search" id="cclSearch" placeholder="搜索分组 / 内容…" oninput="filterCloudCards()">
+    </div>
+    <div class="cml-status">本地: <b>${cards.length}</b> 条 · 云端: <b>${totalItems}</b> 条 · 点击分组预览内容，勾选导入</div>
+    <div class="cml-list" id="cclList"></div>
+    <div class="ccl-actions">
+      <button class="pill-btn" onclick="importSelectedCards()" id="cclImportBtn" disabled>导入选中</button>
+      <button class="pill-btn" onclick="selectAllCloudCards()">全选</button>
+      <button class="pill-btn" onclick="closeModal()">关闭</button>
+    </div>
+  `;
+  modal("云端字卡库", html);
+  window._cclGroups = groups;
+  window._cclSelected = new Set();
+  renderCloudCardGroupList(groups);
+
+  // 监听复选框变化
+  document.getElementById("cclList")?.addEventListener("change", updateCclImportBtn);
+}
+
+window.filterCloudCards = () => {
+  const q = (document.getElementById("cclSearch")?.value || "").trim().toLowerCase();
+  const all = window._cclGroups || [];
+  if (!q) return renderCloudCardGroupList(all);
+  const filtered = all.filter(g =>
+    g.cat.toLowerCase().includes(q) ||
+    (g.items || []).some(item => _cloudItemText(item).toLowerCase().includes(q))
+  );
+  renderCloudCardGroupList(filtered);
+};
+
+function _allCloudCardItems(groups) {
+  return _flattenCloudCards(groups);
+}
+
+window._getAllCloudCardItems = () => _allCloudCardItems(window._cclGroups || []);
+
+function renderCloudCardGroupList(groups) {
+  const el = document.getElementById("cclList");
+  if (!el) return;
+
+  if (!groups.length) {
+    el.innerHTML = '<div class="cml-empty">未找到匹配分组</div>';
+    return;
+  }
+
+  el.innerHTML = groups.map((g, gi) => {
+    const items = (g.items || []).filter(item => {
+      const t = _cloudItemText(item);
+      return t.length > 0;
+    });
+    if (!items.length) return "";
+    const preview = items.slice(0, 3).map(item => {
+      const txt = _cloudItemText(item);
+      return `<span class="ccl-preview-item">${escapeHtml(txt.length > 18 ? txt.slice(0, 18) + "…" : txt)}</span>`;
+    }).join("");
+    const tail = items.length > 3 ? `<span class="ccl-preview-more">+${items.length - 3}</span>` : "";
+
+    return `
+    <div class="ccl-group">
+      <div class="ccl-group-head" onclick="this.parentElement.classList.toggle('open')">
+        <span class="ccl-group-arrow">›</span>
+        <label class="ccl-group-check" onclick="event.stopPropagation()">
+          <input type="checkbox" class="ccl-group-cb" data-gidx="${gi}" onchange="toggleCloudCardGroup(this, '${escapeAttr(g.cat)}')">
+        </label>
+        <b class="ccl-group-name">${escapeHtml(g.cat)}</b>
+        <span class="ccl-group-cnt">${items.length} 条</span>
+      </div>
+      <div class="ccl-group-body">
+        ${items.map((item, ii) => {
+          const text = _cloudItemText(item);
+          const translation = _cloudItemTranslation(item);
+          const id = `${g.cat}::${ii}`;
+          const checked = window._cclSelected?.has(id) || false;
+          return `<label class="ccl-item-row">
+            <input type="checkbox" class="ccl-item-cb" data-id="${escapeAttr(id)}" data-cat="${escapeAttr(g.cat)}" data-text="${escapeAttr(text)}" data-tr="${escapeAttr(translation)}" ${checked ? "checked" : ""} onchange="toggleCloudCardItem(this,'${escapeAttr(id)}')">
+            <span class="ccl-item-text">${escapeHtml(text)}</span>
+            ${translation ? `<span class="ccl-item-tr">${escapeHtml(translation)}</span>` : ""}
+          </label>`;
+        }).join("")}
+      </div>
+    </div>`;
+  }).join("");
+
+  updateCclImportBtn();
+}
+
+window.toggleCloudCardGroup = (cb, cat) => {
+  const checked = cb.checked;
+  const body = cb.closest(".ccl-group")?.querySelector(".ccl-group-body");
+  if (body) {
+    body.querySelectorAll(".ccl-item-cb").forEach(itemCb => {
+      itemCb.checked = checked;
+      const id = itemCb.dataset.id;
+      if (id) { if (checked) window._cclSelected.add(id); else window._cclSelected.delete(id); }
+    });
+  }
+  updateCclImportBtn();
+};
+
+window.toggleCloudCardItem = (cb, id) => {
+  if (cb.checked) window._cclSelected.add(id);
+  else window._cclSelected.delete(id);
+  updateCclImportBtn();
+};
+
+function updateCclImportBtn() {
+  const btn = document.getElementById("cclImportBtn");
+  if (!btn) return;
+  const cnt = window._cclSelected?.size || 0;
+  btn.textContent = `导入选中 (${cnt})`;
+  btn.disabled = cnt === 0;
+}
+
+window.selectAllCloudCards = () => {
+  const all = window._cclGroups || [];
+  window._cclSelected = new Set();
+  all.forEach(g => {
+    (g.items || []).forEach((line, ii) => {
+      const id = `${g.cat}::${ii}`;
+      window._cclSelected.add(id);
+    });
+  });
+  renderCloudCardGroupList(all);
+};
+
+window.importSelectedCards = async () => {
+  if (!window._cclSelected || window._cclSelected.size === 0) { toast("未选择字卡"); return; }
+  const all = _flattenCloudCards(window._cclGroups || []);
+  const selected = [];
+  window._cclSelected.forEach(id => {
+    const [cat, idxStr] = id.split("::");
+    const idx = parseInt(idxStr);
+    // 通过 cat+idx 定位到原始分组中的项
+    const groupFound = (window._cclGroups || []).find(g => g.cat === cat);
+    if (!groupFound || !groupFound.items) return;
+    const item = groupFound.items[idx];
+    if (!item) return;
+    const text = _cloudItemText(item);
+    const translation = _cloudItemTranslation(item);
+    if (text) selected.push({ cat, text, translation });
+  });
+
+  if (!selected.length) { toast("无有效内容"); return; }
+
+  const dupes = [];
+  const fresh = [];
+  selected.forEach(item => {
+    if (cards.some(c => c.text === item.text && c.cat === item.cat)) {
+      dupes.push(item);
+    } else {
+      fresh.push(item);
+    }
+  });
+
+  let added = 0;
+  fresh.forEach(item => {
+    if (cards.length >= MAX_CARDS) return;
+    cards.push({ id: "c" + Date.now() + (added++), text: item.text, translation: item.translation, cat: item.cat });
+  });
+
+  await saveAll();
+  renderCards();
+  closeModal();
+  const msg = `已导入 ${added} 条`;
+  if (dupes.length) toast(`${msg}（跳过 ${dupes.length} 条重复）`);
+  else toast(msg);
+};
+
+// ═══ 云端表情包库 ═══
+const CLOUD_STICKER_LF_KEY = "cy-sticker-index";
+
+let _stickerLF = null;
+function _ensureStickerLF() {
+  if (!_stickerLF && typeof localforage !== "undefined") {
+    _stickerLF = localforage.createInstance({ name: "SilentChamberStickerCache" });
+  }
+  return _stickerLF;
+}
+
+// 将 {categories:{key:{label,items}}} 转为扁平数组 [{name,src,cat,catLabel,...}]
+function _normaliseCloudStickers(data) {
+  if (Array.isArray(data)) {
+    return data;
+  }
+  if (data.stickers && Array.isArray(data.stickers)) {
+    return data.stickers;
+  }
+  if (data.categories && typeof data.categories === "object") {
+    const result = [];
+    Object.entries(data.categories).forEach(([key, cat]) => {
+      if (!cat.items || !cat.items.length) return;
+      cat.items.forEach(item => {
+        const obj = typeof item === "object" && item !== null ? item : {};
+        result.push({ ...obj, catLabel: cat.label || key, catKey: key });
+      });
+    });
+    return result;
+  }
+  return [];
+}
+
+async function fetchCloudStickers(forceRefresh) {
+  const lf = _ensureStickerLF();
+  const indexUrl = cfg.cloudStickerIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json";
+
+  if (!forceRefresh && cloudStickerCache && cloudStickerCache.length) return cloudStickerCache;
+
+  if (!forceRefresh && lf) {
+    try {
+      const cached = await lf.getItem(CLOUD_STICKER_LF_KEY);
+      if (cached && cached.stickers && cached.stickers.length) {
+        cloudStickerCache = cached.stickers;
+        updateCloudStickerStatus(`已缓存 ${cached.stickers.length} 个 · ${new Date(cached.at).toLocaleDateString()}`);
+        return cached.stickers;
+      }
+    } catch (e) {}
+  }
+
+  updateCloudStickerStatus("正在连接…");
+  try {
+    const res = await fetch(indexUrl);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const stkData = _normaliseCloudStickers(data);
+    if (!Array.isArray(stkData) || !stkData.length) throw new Error("索引为空（暂无表情）");
+
+    cloudStickerCache = stkData;
+    if (lf) {
+      try { await lf.setItem(CLOUD_STICKER_LF_KEY, { stickers: stkData, at: Date.now() }); } catch (e) {}
+    }
+    cfg.cloudStickerLastSync = Date.now();
+    saveAllDebounced();
+    updateCloudStickerStatus(`共 ${stkData.length} 个 · 已同步`);
+    return stkData;
+  } catch (e) {
+    updateCloudStickerStatus("连接失败，使用缓存数据");
+    if (cloudStickerCache) return cloudStickerCache;
+    if (lf) {
+      try { const c = await lf.getItem(CLOUD_STICKER_LF_KEY); if (c && c.stickers) { cloudStickerCache = c.stickers; updateCloudStickerStatus(`共 ${c.stickers.length} 个 · 离线缓存`); return c.stickers; } } catch(e2) {}
+    }
+    toast("无法获取云端表情包", "warn");
+    return [];
+  }
+}
+
+function updateCloudStickerStatus(msg) {
+  const el = document.getElementById("cloudStickerStatus");
+  if (el) { el.style.display = ""; el.textContent = msg; }
+}
+
+window.refreshCloudStickers = async () => {
+  const lf = _ensureStickerLF();
+  if (lf) { try { await lf.removeItem(CLOUD_STICKER_LF_KEY); } catch(e) {} }
+  cloudStickerCache = null;
+  await fetchCloudStickers(true);
+  toast("表情库已刷新");
+};
+
+window.openCloudStickerLibrary = async () => {
+  const stks = await fetchCloudStickers();
+  if (!stks.length) { toast("云端表情无数据", "warn"); return; }
+  renderCloudStickerModal(stks);
+};
+
+function renderCloudStickerModal(stks) {
+  let html = `
+    <div class="cml-search-wrap">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input class="cml-search" id="cskSearch" placeholder="搜索表情…" oninput="filterCloudStickers()">
+    </div>
+    <div class="cml-status">本地: <b>${stickers.length}</b> 个 · 云端: <b>${stks.length}</b> 个</div>
+    <div class="csk-grid" id="cskGrid"></div>
+    <div class="ccl-actions">
+      <button class="pill-btn" onclick="importSelectedStickers()" id="cskImportBtn" disabled>导入选中</button>
+      <button class="pill-btn" onclick="selectAllCloudStickers()">全选</button>
+      <button class="pill-btn" onclick="closeModal()">关闭</button>
+    </div>
+  `;
+  modal("云端表情库", html);
+  window._cskData = stks;
+  window._cskSelected = new Set();
+  renderCloudStickerGrid(stks);
+  document.getElementById("cskGrid")?.addEventListener("change", updateCskImportBtn);
+}
+
+window.filterCloudStickers = () => {
+  const q = (document.getElementById("cskSearch")?.value || "").trim().toLowerCase();
+  const all = window._cskData || [];
+  if (!q) return renderCloudStickerGrid(all);
+  renderCloudStickerGrid(all.filter(s =>
+    (_stickerName(s) || "").toLowerCase().includes(q) ||
+    (s.catLabel || "").toLowerCase().includes(q)
+  ));
+};
+
+// 从云表情索引 URL 推导出图片资源的基础路径（仓库根目录）
+// 例如 https://…/cy-chat/main/Meme/meme.json → https://…/cy-chat/main/
+function _cloudStickerBase() {
+  const idx = cfg.cloudStickerIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json";
+  // meme.json 内的 url 字段是相对于仓库根的（如 Meme/images/xxx.jpg），所以取 /main/ 层级
+  const m = idx.match(/^(.+\/[^\/]+\/)Meme\/meme\.json$/);
+  if (m) return m[1];
+  // 兜底：去掉 meme.json，再退两层目录
+  return idx.replace(/Meme\/meme\.json$/, "");
+}
+function _stickerSrc(s) {
+  const raw = s.src || s.url || "";
+  if (!raw || /^https?:\/\//.test(raw)) return raw;
+  // 相对路径：拼到 Meme/ 目录下
+  return _cloudStickerBase() + raw;
+}
+function _stickerName(s) { return s.name || s.title || s.label || "未命名"; }
+
+function renderCloudStickerGrid(stks) {
+  const el = document.getElementById("cskGrid");
+  if (!el) return;
+  if (!stks.length) { el.innerHTML = '<div class="cml-empty">未找到表情</div>'; return; }
+
+  el.innerHTML = stks.map((s, i) => {
+    const src = _stickerSrc(s);
+    const name = _stickerName(s);
+    const cat = s.catLabel || "";
+    const id = `csk_${i}`;
+    const checked = window._cskSelected?.has(id) || false;
+    return `<div class="csk-item">
+      <div class="csk-img-wrap">
+        <img src="${escapeHtml(src)}" loading="lazy" onerror="this.parentElement.classList.add('broken')">
+        ${!src ? '<div class="csk-broken">无图</div>' : ""}
+      </div>
+      <div class="csk-name">${escapeHtml(name)}</div>
+      ${cat ? `<div class="csk-cat">${escapeHtml(cat)}</div>` : ""}
+      <label class="csk-check">
+        <input type="checkbox" data-id="${escapeAttr(id)}" data-src="${escapeAttr(src)}" ${checked ? "checked" : ""} onchange="toggleCloudStickerItem(this,'${escapeAttr(id)}')">
+        <span>${checked ? "已选" : "选择"}</span>
+      </label>
+    </div>`;
+  }).join("");
+  updateCskImportBtn();
+}
+
+window.toggleCloudStickerItem = (cb, id) => {
+  if (cb.checked) window._cskSelected.add(id);
+  else window._cskSelected.delete(id);
+  updateCskImportBtn();
+};
+
+function updateCskImportBtn() {
+  const btn = document.getElementById("cskImportBtn");
+  if (!btn) return;
+  const cnt = window._cskSelected?.size || 0;
+  btn.textContent = `导入选中 (${cnt})`;
+  btn.disabled = cnt === 0;
+}
+
+window.selectAllCloudStickers = () => {
+  window._cskSelected = new Set();
+  (window._cskData || []).forEach((s, i) => window._cskSelected.add(`csk_${i}`));
+  renderCloudStickerGrid(window._cskData || []);
+};
+
+window.importSelectedStickers = async () => {
+  if (!window._cskSelected || window._cskSelected.size === 0) { toast("未选择表情"); return; }
+  const data = window._cskData || [];
+  const existing = new Set(stickers.map(s => s.src));
+  let added = 0, skipped = 0;
+
+  window._cskSelected.forEach(id => {
+    const idx = parseInt(id.replace("csk_", ""));
+    const s = data[idx];
+    if (!s) return;
+    const src = _stickerSrc(s);
+    if (!src) return;
+    if (existing.has(src)) { skipped++; return; }
+    stickers.push({ id: "sk" + Date.now() + added, src, type: "url", shielded: false, addedAt: Date.now() });
+    existing.add(src);
+    added++;
+  });
+
+  await saveAll();
+  renderStickers();
+  closeModal();
+  toast(skipped ? `已导入 ${added} 个（跳过 ${skipped} 个重复）` : `已导入 ${added} 个`);
 };
