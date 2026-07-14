@@ -3905,6 +3905,7 @@ function renderCloudCardModal(groups) {
     <div class="ccl-actions">
       <button class="pill-btn" onclick="importSelectedCards()" id="cclImportBtn" disabled>导入选中</button>
       <button class="pill-btn" onclick="selectAllCloudCards()">全选</button>
+      <button class="pill-btn" onclick="closeModal();refreshCloudCards().then(()=>openCloudCardLibrary())">刷新</button>
       <button class="pill-btn" onclick="closeModal()">关闭</button>
     </div>
   `;
@@ -4173,6 +4174,7 @@ function renderCloudStickerModal(stks) {
     <div class="ccl-actions">
       <button class="pill-btn" onclick="importSelectedStickers()" id="cskImportBtn" disabled>导入选中</button>
       <button class="pill-btn" onclick="selectAllCloudStickers()">全选</button>
+      <button class="pill-btn" onclick="closeModal();refreshCloudStickers().then(()=>openCloudStickerLibrary())">刷新</button>
       <button class="pill-btn" onclick="closeModal()">关闭</button>
     </div>
   `;
