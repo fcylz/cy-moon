@@ -3500,6 +3500,11 @@
   font-size: calc(var(--fs)*1.15); line-height:1.8; font-weight:600;
   padding:4px 2px 6px; letter-spacing:1px;
 }
+.qf-cmt-hint {
+  font-size:calc(var(--fs)*.55); font-weight:500; color:var(--accent);
+  background:var(--accent-soft); padding:1px 8px; border-radius:10px;
+  vertical-align:middle; margin-left:8px; letter-spacing:2px;
+}
 .qf-options { display:flex; flex-direction:column; gap:10px; }
 .qf-opt {
   border:1px solid var(--border); border-radius:14px; padding:14px 16px;
@@ -3513,6 +3518,14 @@
   border-color: var(--accent); background: var(--accent-soft);
   font-weight:600; color: var(--accent);
 }
+/* 🌙 选项内联昵称标签：我 / 彼 */
+.qf-badge {
+  display:inline-block; vertical-align:middle; margin-left:10px;
+  font-size:calc(var(--fs)*.65); padding:1px 10px; border-radius:20px;
+  font-weight:600; letter-spacing:1px; line-height:1.9;
+}
+.qf-badge.self { background:var(--accent); color:#fff; }
+.qf-badge.opp { background:transparent; color:var(--accent); border:1px solid var(--accent); }
 .qf-opp {
   margin-top:2px; background: var(--bg-soft); border-radius:14px; padding:14px 16px;
   border:1px solid var(--border); animation: sfStepIn .3s var(--ease);

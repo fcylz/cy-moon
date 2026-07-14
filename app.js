@@ -2738,7 +2738,6 @@ window.removeSepSymbol = async (i) => {
   renderSepSettings();
 };
 
-// ════════════════════════════════════════════
 // ══ 问卷调查 (Survey) ══
 // ════════════════════════════════════════════
 
@@ -2799,51 +2798,19 @@ window.openSurveyDetail = (id) => {
   modal(s.title, html);
 };
 
-/* ⭐ 原始代码：
 window.openRecordSummary = (id) => {
   const r = surveyRecords.find(x=>x.id===id); if (!r) return;
+  const oppNm = texts.opp_name||"温语";
   const d = new Date(r.ts);
   let html = `<div class="fld-tip">${fmtDate(d)} ${fmtTime(d)}</div>`;
   r.answers.forEach(a=>{
     html += `<div class="qf-sum-item">
       <div class="qf-sum-q">${escapeHtml(a.q)}</div>
-      <div class="qf-sum-row">我　${escapeHtml(a.self)}</div>
-      <div class="qf-sum-row">彼　${escapeHtml(a.opp)}</div>`;
+      <div class="qf-sum-row">我　　　${escapeHtml(a.self)}</div>
+      <div class="qf-sum-row">${escapeHtml(oppNm)}　　　${escapeHtml(a.opp)}</div>`;
     if (a.oppComment !== undefined){
       html += `<div class="qf-sum-row">我的评论　${escapeHtml(a.selfComment || "（无）")}</div>
-        <div class="qf-sum-row">彼的评论　${escapeHtml(a.oppComment)}</div>`;
-    }
-    html += `</div>`;
-  });
-  html += `<button class="pill-btn danger" onclick="deleteRecord('${r.id}')">删除该记录</button>`;
-  modal(r.title, html);
-};
-*/
-/* ⭐ 新增默契程度统计：逐题显示是否默契，顶部显示总体默契度 */
-window.openRecordSummary = (id) => {
-  const r = surveyRecords.find(x=>x.id===id); if (!r) return;
-  const d = new Date(r.ts);
-  /* ⭐ 计算默契题目数 */
-  let matchCount = 0;
-  r.answers.forEach(a => { if (a.self === a.opp) matchCount++; });
-  const total = r.answers.length;
-  const pct = total > 0 ? Math.round(matchCount / total * 100) : 0;
-  let html = `<div class="fld-tip">${fmtDate(d)} ${fmtTime(d)}</div>`;
-  /* ⭐ 顶部默契度总览 */
-  html += `<div class="qf-sum-item" style="background:var(--accent-soft);border-radius:12px;padding:12px 14px;margin-bottom:10px;">
-    <div style="font-size:calc(var(--fs)*.85);color:var(--accent);font-weight:600;">默契程度</div>
-    <div style="font-size:calc(var(--fs)*1.8);font-weight:700;color:var(--accent);margin:4px 0;">${pct}%</div>
-    <div style="font-size:calc(var(--fs)*.7);color:var(--text-mute);">${matchCount} / ${total} 题选择一致</div>
-  </div>`;
-  r.answers.forEach(a=>{
-    const isMatch = a.self === a.opp;
-    html += `<div class="qf-sum-item">
-      <div class="qf-sum-q">${escapeHtml(a.q)}${isMatch ? ' ⭐ 默契' : ''}</div>
-      <div class="qf-sum-row">我　${escapeHtml(a.self)}</div>
-      <div class="qf-sum-row">彼　${escapeHtml(a.opp)}</div>`;
-    if (a.oppComment !== undefined){
-      html += `<div class="qf-sum-row">我的评论　${escapeHtml(a.selfComment || "（无）")}</div>
-        <div class="qf-sum-row">彼的评论　${escapeHtml(a.oppComment)}</div>`;
+        <div class="qf-sum-row">${escapeHtml(oppNm)}的评论　${escapeHtml(a.oppComment)}</div>`;
     }
     html += `</div>`;
   });
@@ -2879,33 +2846,7 @@ window.exportSurvey = (id) => {
   toast("已导出");
 };
 
-/* ⭐ 原始代码（仅 JSON 导入）：
-function onPickSurvey(e){
-  const f = e.target.files[0]; if (!f) return;
-  const r = new FileReader();
-  r.onload = async ev => {
-    try {
-      const d = JSON.parse(ev.target.result);
-      if (!d.title || !Array.isArray(d.questions)) { toast("文件格式不正确","warn"); return; }
-      surveys.push({
-        id: "s"+Date.now(),
-        title: d.title,
-        questions: d.questions.map(q=>({
-          text: q.text || "",
-          options: Array.isArray(q.options) ? q.options.filter(o=>o) : [],
-          needComment: !!q.needComment
-        })).filter(q=>q.text && q.options.length>=2)
-      });
-      await saveAll();
-      renderSurveys();
-      toast("导入成功");
-    } catch { toast("文件解析失败","warn"); }
-    e.target.value = "";
-  };
-  r.readAsText(f);
-}
-*/
-/* ⭐ 新增 txt 格式支持：也接受 .txt 文本文件导入 */
+/* 🌙 新增：支持 .txt 文本文件导入（原始仅支持 JSON） */
 function onPickSurvey(e){
   const f = e.target.files[0]; if (!f) return;
   const isTxt = f.name.endsWith(".txt");
@@ -2915,17 +2856,15 @@ function onPickSurvey(e){
       const text = ev.target.result;
       let importData;
       if (isTxt){
-        /* ⭐ 解析 txt 格式问卷 */
         importData = parseSurveyTxt(text);
       } else {
-        /* ⭐ 原有 JSON 解析逻辑 */
         importData = JSON.parse(text);
       }
       if (!importData.title || !Array.isArray(importData.questions)) { toast("文件格式不正确","warn"); return; }
       const qs = importData.questions.map(q=>({
         text: q.text || "",
         options: Array.isArray(q.options) ? q.options.filter(o=>o) : [],
-        needComment: !!q.needComment
+        needComment: true  /* 导入问卷默认开启评论 */
       })).filter(q=>q.text && q.options.length>=2);
       if (!qs.length){ toast("没有有效题目","warn"); return; }
       surveys.push({
@@ -2942,53 +2881,26 @@ function onPickSurvey(e){
   r.readAsText(f);
 }
 
-/* ⭐ 新增：解析 txt 格式问卷
-   格式说明：
-     - 第一行：问卷标题
-     - 每个题目以单独一行的 "---" 分隔
-     - 题目块内：首行为题目文本，后续每行为一个选项
-     - 示例：
-       默契大考验
-       ---
-       最喜欢的颜色？
-       红色
-       蓝色
-       绿色
-       ---
-       最想去的地方？
-       海边
-       山间
-       城市
-       ---
-*/
+/* 🌙 新增：解析 txt 格式问卷（第一行标题，--- 分隔题目，首行题目，后续行选项） */
 function parseSurveyTxt(text){
-  const lines = text.replace(/\r\n/g,"\n").split("\n");
+  const lines = text.split(/\r?\n/);
   const title = (lines[0] || "").trim();
   const questions = [];
-  let curQ = null; // { text, options[] }
+  let curQ = null;
   for (let i = 1; i < lines.length; i++){
     const line = lines[i].trim();
-    if (!line) continue; // 跳过空行
+    if (!line) continue;
     if (line === "---"){
-      /* ⭐ 遇到分隔符 → 保存当前题目，开始新题目 */
-      if (curQ && curQ.text && curQ.options.length >= 2){
-        questions.push({...curQ});
-      }
-      curQ = { text: "", options: [], needComment: false };
+      if (curQ && curQ.text && curQ.options.length >= 2) questions.push({...curQ});
+      curQ = { text: "", options: [], needComment: true };
     } else if (!curQ){
-      // 第一个 "---" 之前的文本忽略（已在标题中）
     } else if (!curQ.text){
-      /* ⭐ 首行是题目文本 */
       curQ.text = line;
     } else {
-      /* ⭐ 后续行是选项 */
       curQ.options.push(line);
     }
   }
-  /* ⭐ 最后一个题目块（末尾可能没有 "---"） */
-  if (curQ && curQ.text && curQ.options.length >= 2){
-    questions.push(curQ);
-  }
+  if (curQ && curQ.text && curQ.options.length >= 2) questions.push(curQ);
   return { title, questions };
 }
 
@@ -3169,14 +3081,7 @@ let sfTimer = null;
 function openSurveyFull(){
   document.getElementById("surveyFull").classList.add("on");
 }
-/* ⭐ 原始代码：
-window.closeSurveyFull = () => {
-  clearTimeout(sfTimer); sfTimer = null;
-  surveyFill = null;
-  document.getElementById("surveyFull").classList.remove("on");
-};
-*/
-/* ⭐ 新增清除对方选择计时器 _oppTimer */
+/* 🌙 关闭时额外清理 _oppTimer（对方独立选择计时器） */
 window.closeSurveyFull = () => {
   clearTimeout(sfTimer); sfTimer = null;
   if (surveyFill && surveyFill._oppTimer){ clearTimeout(surveyFill._oppTimer); surveyFill._oppTimer = null; }
@@ -3184,56 +3089,32 @@ window.closeSurveyFull = () => {
   document.getElementById("surveyFull").classList.remove("on");
 };
 
-/* ⭐ 原始代码：
-window.startSurveyFill = (id) => {
-  const survey = surveys.find(s=>s.id===id);
-  if (!survey || !survey.questions.length){ toast("问卷为空","warn"); return; }
-  surveyFill = { surveyId:id, survey, qIndex:0, selfIdx:-1, oppIdx:-1, stage:"pick", reselectMsg:"", curAnswer:null, answers:[] };
-  openSurveyFull();
-  renderFillStep();
-};
-*/
-/* ⭐ 新增 _oppTimer：对方独立计时选择，不等用户先选 */
+/* 🌙 新增：对方独立自由选择，不等待用户先选答案 */
 window.startSurveyFill = (id) => {
   const survey = surveys.find(s=>s.id===id);
   if (!survey || !survey.questions.length){ toast("问卷为空","warn"); return; }
   surveyFill = { surveyId:id, survey, qIndex:0, selfIdx:-1, oppIdx:-1, stage:"pick", reselectMsg:"", curAnswer:null, answers:[], _oppTimer:null };
   openSurveyFull();
   renderFillStep();
-  /* ⭐ 对方在5-20秒内独立随机选择，不等待用户 */
   _startOppSelection();
 };
 
-/* ⭐ 原始代码：
+/* 🌙 用户选择时不再自动触发对方选择（对方由独立计时器控制） */
 window.fillSelectSelf = (i) => {
   const sf = surveyFill; if (!sf || sf.stage!=="pick") return;
-  const firstPick = sf.selfIdx === -1;
-  sf.selfIdx = i;
-  if (firstPick){
-    const q = sf.survey.questions[sf.qIndex];
-    sf.oppIdx = randInt(0, q.options.length-1);
-  }
-  renderFillStep();
-};
-*/
-/* ⭐ 对方独立计时选择，不再随用户选择而自动选择 */
-window.fillSelectSelf = (i) => {
-  const sf = surveyFill; if (!sf || sf.stage!=="pick") return;
-  /* ⭐ 原始逻辑 firstPick 和自动设置 oppIdx 已移除，对方由 _startOppSelection 独立控制 */
   sf.selfIdx = i;
   renderFillStep();
 };
 
-/* ⭐ 新增：对方在5-20秒内独立随机选择，不用等用户先选 */
+/* 🌙 新增：对方在5-20秒内独立随机选择 */
 function _startOppSelection(){
   const sf = surveyFill; if (!sf) return;
-  // 清理旧计时器
   if (sf._oppTimer){ clearTimeout(sf._oppTimer); sf._oppTimer = null; }
-  if (sf.oppIdx > -1) return; // 对方已选择则跳过
+  if (sf.oppIdx > -1) return;
   const delay = randInt(5, 20) * 1000;
   sf._oppTimer = setTimeout(() => {
     const sf2 = surveyFill;
-    if (!sf2 || sf2.oppIdx > -1) return; // 已选择或已退出
+    if (!sf2 || sf2.oppIdx > -1) return;
     const q = sf2.survey.questions[sf2.qIndex];
     sf2.oppIdx = randInt(0, q.options.length - 1);
     sf2._oppTimer = null;
@@ -3241,48 +3122,26 @@ function _startOppSelection(){
   }, delay);
 }
 
-/* ⭐ 原始代码：重选缓冲1~3秒后50%概率对方接受/拒绝
+/* 🌙 重选：5-20秒等待，50%接受/拒绝；拒绝后恢复原选项，不再重新等待 */
 window.fillReselect = () => {
   const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1) return;
-  sf.stage = "reselecting";
-  sf.reselectMsg = "对方正在重新选择…";
-  renderFillStep();
-  clearTimeout(sfTimer);
-  sfTimer = setTimeout(()=>{
-    if (Math.random() < 0.5){
-      sf.stage = "reselect-refused";
-      sf.reselectMsg = "对方拒绝了重选请求";
-      renderFillStep();
-      sfTimer = setTimeout(()=>{ sf.stage="pick"; renderFillStep(); }, 1100);
-    } else {
-      const q = sf.survey.questions[sf.qIndex];
-      sf.oppIdx = randInt(0, q.options.length-1);
-      sf.stage = "reselect-done";
-      sf.reselectMsg = "选择完毕";
-      renderFillStep();
-      sfTimer = setTimeout(()=>{ sf.stage="pick"; renderFillStep(); }, 900);
-    }
-  }, randInt(1,3)*1000);
-};
-*/
-/* ⭐ "重选"：清除对方选择，重新启动5-20秒随机选择计时器，最终50%概率接受/拒绝 */
-window.fillReselect = () => {
-  const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1) return;
-  /* ⭐ 清除对方当前选择和计时器 */
+  /* 🌙 保存重选前的对方选项，拒绝时恢复 */
+  const prevOppIdx = sf.oppIdx;
   sf.oppIdx = -1;
   if (sf._oppTimer){ clearTimeout(sf._oppTimer); sf._oppTimer = null; }
   sf.stage = "reselecting";
   sf.reselectMsg = "对方正在重新选择…";
   renderFillStep();
-  /* ⭐ 对方在5-20秒内重新选择 */
   sf._oppTimer = setTimeout(()=>{
     const sf2 = surveyFill; if (!sf2) return;
     if (Math.random() < 0.5){
+      /* 🌙 拒绝重选 → 恢复原选项，回到 pick，不重新计时 */
+      sf2.oppIdx = prevOppIdx;
       sf2.stage = "reselect-refused";
       sf2.reselectMsg = "对方拒绝了重选请求";
       sf2._oppTimer = null;
       renderFillStep();
-      sf2._oppTimer = setTimeout(()=>{ sf2.stage="pick"; renderFillStep(); _startOppSelection(); }, 1100);
+      sf2._oppTimer = setTimeout(()=>{ sf2.stage="pick"; renderFillStep(); }, 1100);
     } else {
       const q = sf2.survey.questions[sf2.qIndex];
       sf2.oppIdx = randInt(0, q.options.length - 1);
@@ -3295,13 +3154,7 @@ window.fillReselect = () => {
   }, randInt(5, 20) * 1000);
 };
 
-/* ⭐ 原始代码：
-window.fillNext = () => {
-  const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1) return;
-  proceedAfterPick();
-};
-*/
-/* ⭐ 新增 oppIdx 检查：双方都必须选择后才能进入下一步 */
+/* 🌙 双方都必须选择后，下一步才可用 */
 window.fillNext = () => {
   const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1 || sf.oppIdx===-1) return;
   proceedAfterPick();
@@ -3311,13 +3164,12 @@ function proceedAfterPick(){
   const sf = surveyFill;
   const q = sf.survey.questions[sf.qIndex];
   sf.curAnswer = { q: q.text, self: q.options[sf.selfIdx], opp: q.options[sf.oppIdx] };
+  console.log('📋 proceedAfterPick · needComment='+q.needComment+' · qIndex='+sf.qIndex+' · q='+q.text);
   if (q.needComment){
     sf.stage = "comment-wait";
     renderFillStep();
     clearTimeout(sfTimer);
-    /* ⭐ 原始代码：评论等待3-10秒 */
-    /* sfTimer = setTimeout(()=>{ ... }, randInt(3,10)*1000); */
-    /* ⭐ 评论等待改为5-30秒 */
+    /* 🌙 评论等待5-30秒（原始3-10秒） */
     sfTimer = setTimeout(()=>{
       sf.curAnswer.oppComment = generateOppComment();
       sf.curAnswer.selfComment = "";
@@ -3338,21 +3190,11 @@ window.fillNextFromComment = () => {
   nextQuestion();
 };
 
-/* ⭐ 原始代码：
+/* 🌙 进入下一题时自动启动对方选择计时器 */
 function nextQuestion(){
   const sf = surveyFill;
   sf.qIndex++;
   sf.selfIdx = -1; sf.oppIdx = -1; sf.stage = "pick"; sf.reselectMsg = ""; sf.curAnswer = null;
-  if (sf.qIndex >= sf.survey.questions.length) renderFillSummary();
-  else renderFillStep();
-}
-*/
-/* ⭐ 新增：进入下一题时自动启动对方选择计时器 */
-function nextQuestion(){
-  const sf = surveyFill;
-  sf.qIndex++;
-  sf.selfIdx = -1; sf.oppIdx = -1; sf.stage = "pick"; sf.reselectMsg = ""; sf.curAnswer = null;
-  /* ⭐ 清理上一题的对方计时器 */
   if (sf._oppTimer){ clearTimeout(sf._oppTimer); sf._oppTimer = null; }
   if (sf.qIndex >= sf.survey.questions.length) renderFillSummary();
   else { renderFillStep(); _startOppSelection(); }
@@ -3369,85 +3211,49 @@ function indicatorHtml(msg, spinning){
   return `<div class="qf-indicator">${icon}<span>${escapeHtml(msg)}</span></div>`;
 }
 
-/* ⭐ 原始代码：
+/* 🌙 重写渲染：对方独立计时选择，不依赖用户先选 */
 function renderFillStep(){
   const sf = surveyFill;
   const q = sf.survey.questions[sf.qIndex];
   document.getElementById("sfFullTitle").innerText = sf.survey.title;
   document.getElementById("sfFullProgress").innerText = `${sf.qIndex+1} / ${sf.survey.questions.length}`;
 
-  let html = `<div class="qf-question">${escapeHtml(q.text)}</div><div class="qf-options">`;
+  const oppNm = texts.opp_name||"温语";
+  /* 🌙 题目旁显示是否为评论题 */
+  const cmtHint = q.needComment ? ' <span class="qf-cmt-hint">含评论</span>' : '';
+  let html = `<div class="qf-question">${escapeHtml(q.text)}${cmtHint}</div><div class="qf-options">`;
   q.options.forEach((opt,i)=>{
-    html += `<div class="qf-opt ${i===sf.selfIdx?"selected":""}" onclick="fillSelectSelf(${i})">${escapeHtml(opt)}</div>`;
+    /* 🌙 选择后双方昵称出现在对应选项后面，用户选项不高亮 */
+    let badgeHtml = '';
+    if (i===sf.selfIdx) badgeHtml += '<span class="qf-badge self">我</span>';
+    if (i===sf.oppIdx) badgeHtml += `<span class="qf-badge opp">${escapeHtml(oppNm)}</span>`;
+    html += `<div class="qf-opt" onclick="fillSelectSelf(${i})">${escapeHtml(opt)}${badgeHtml}</div>`;
   });
   html += `</div>`;
 
-  if (sf.selfIdx > -1){
-    if (sf.stage === "pick"){
-      html += oppBlock(q,sf) + `<div class="qf-actions">
-        <button class="pill-btn" onclick="fillReselect()">重选</button>
-        <button class="pill-btn" onclick="fillNext()">下一步</button>
-      </div>`;
-    } else if (sf.stage === "reselecting"){
-      html += oppBlock(q,sf,true) + indicatorHtml(sf.reselectMsg, true);
-    } else if (sf.stage === "reselect-refused" || sf.stage === "reselect-done"){
-      html += oppBlock(q,sf) + indicatorHtml(sf.reselectMsg, false);
-    } else if (sf.stage === "comment-wait"){
-      html += oppBlock(q,sf) + indicatorHtml("对方正在输入评论…", true);
-    } else if (sf.stage === "comment"){
-      html += oppBlock(q,sf)
-        + `<div class="qf-comment"><div class="qf-comment-label">对方评论</div><div class="qf-comment-text">${escapeHtml(sf.curAnswer.oppComment)}</div></div>
-        <textarea class="fld area" id="qfSelfComment" placeholder="写下你的评论…（可留空）"></textarea>
-        <button class="pill-btn" onclick="fillNextFromComment()">下一步</button>`;
-    }
-  }
-
-  document.getElementById("sfFullBody").innerHTML = html;
-}
-*/
-/* ⭐ 重写渲染逻辑：对方独立计时选择，不依赖用户先选 */
-function renderFillStep(){
-  const sf = surveyFill;
-  const q = sf.survey.questions[sf.qIndex];
-  document.getElementById("sfFullTitle").innerText = sf.survey.title;
-  document.getElementById("sfFullProgress").innerText = `${sf.qIndex+1} / ${sf.survey.questions.length}`;
-
-  let html = `<div class="qf-question">${escapeHtml(q.text)}</div><div class="qf-options">`;
-  q.options.forEach((opt,i)=>{
-    html += `<div class="qf-opt ${i===sf.selfIdx?"selected":""}" onclick="fillSelectSelf(${i})">${escapeHtml(opt)}</div>`;
-  });
-  html += `</div>`;
-
-  /* ⭐ 根据 stage 和双方选择状态渲染不同界面 */
   if (sf.stage === "pick"){
     if (sf.oppIdx > -1){
-      /* ⭐ 对方已选择 → 显示对方选择区块 */
-      html += oppBlock(q, sf);
       if (sf.selfIdx > -1){
-        /* ⭐ 双方都已选择 → 显示重选和下一步按钮 */
         html += `<div class="qf-actions">
           <button class="pill-btn" onclick="fillReselect()">重选</button>
           <button class="pill-btn" onclick="fillNext()">下一步</button>
         </div>`;
       }
     } else {
-      /* ⭐ 对方尚未选择 → 显示等待动画 */
-      html += indicatorHtml("对方正在选择…", true);
+      /* 🌙 等待对方选择中不显示高亮块，仅状态指示 */
+      html += indicatorHtml("等待对方选择中…", true);
     }
   } else if (sf.stage === "reselecting"){
-    /* ⭐ 对方正在重新选择中（oppIdx 已清空，仅显示指示器） */
     html += indicatorHtml(sf.reselectMsg, true);
   } else if (sf.stage === "reselect-refused"){
-    /* ⭐ 对方拒绝了重选请求 */
+    /* 🌙 拒绝后选项内联显示原选项，仅状态提示 */
     html += indicatorHtml(sf.reselectMsg, false);
   } else if (sf.stage === "reselect-done"){
-    /* ⭐ 对方重新选择完成 → 显示新选择 */
-    html += oppBlock(q, sf) + indicatorHtml(sf.reselectMsg, false);
+    html += indicatorHtml(sf.reselectMsg, false);
   } else if (sf.stage === "comment-wait"){
-    html += oppBlock(q, sf) + indicatorHtml("对方正在输入评论…", true);
+    html += indicatorHtml("对方正在输入评论…", true);
   } else if (sf.stage === "comment"){
-    html += oppBlock(q, sf)
-      + `<div class="qf-comment"><div class="qf-comment-label">对方评论</div><div class="qf-comment-text">${escapeHtml(sf.curAnswer.oppComment)}</div></div>
+    html += `<div class="qf-comment"><div class="qf-comment-label">对方评论</div><div class="qf-comment-text">${escapeHtml(sf.curAnswer.oppComment)}</div></div>
       <textarea class="fld area" id="qfSelfComment" placeholder="写下你的评论…（可留空）"></textarea>
       <button class="pill-btn" onclick="fillNextFromComment()">下一步</button>`;
   }
@@ -3457,17 +3263,18 @@ function renderFillStep(){
 
 function renderFillSummary(){
   const sf = surveyFill;
+  const oppNm = texts.opp_name||"温语";
   document.getElementById("sfFullTitle").innerText = sf.survey.title;
   document.getElementById("sfFullProgress").innerText = "完成";
   let html = `<div class="qf-summary">`;
   sf.answers.forEach(a=>{
     html += `<div class="qf-sum-item">
       <div class="qf-sum-q">${escapeHtml(a.q)}</div>
-      <div class="qf-sum-row">我　${escapeHtml(a.self)}</div>
-      <div class="qf-sum-row">彼　${escapeHtml(a.opp)}</div>`;
+      <div class="qf-sum-row">我　　　${escapeHtml(a.self)}</div>
+      <div class="qf-sum-row">${escapeHtml(oppNm)}　　　${escapeHtml(a.opp)}</div>`;
     if (a.oppComment !== undefined){
       html += `<div class="qf-sum-row">我的评论　${escapeHtml(a.selfComment || "（无）")}</div>
-        <div class="qf-sum-row">彼的评论　${escapeHtml(a.oppComment)}</div>`;
+        <div class="qf-sum-row">${escapeHtml(oppNm)}的评论　${escapeHtml(a.oppComment)}</div>`;
     }
     html += `</div>`;
   });
