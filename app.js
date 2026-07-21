@@ -91,8 +91,6 @@ if ("serviceWorker" in navigator) {
 let ctxTargetIdx=-1, musicAudio=null, unreadCount=0, popupTimer=null;
 let imgPickKey="", memberPickIdx=-1, isBatchSelecting=false;
 let cardsActiveTab="cards", isStickerBatchSelecting=false, stickerSelected=[];
-let stickerPickerPage=0, stickerLibPage=0;
-const STICKER_PICKER_PAGE_SIZE=10, STICKER_LIB_PAGE_SIZE=20;
 let cloudSongCache=null, cloudCardCache=null, cloudStickerCache=null; // 云端数据内存缓存
 
 const TEXT_GROUPS = [
@@ -157,6 +155,29 @@ function dbSet(k,v) {
     try { const t=DB.transaction("kv","readwrite"); t.objectStore("kv").put(v,k); t.oncomplete=()=>res(); } catch{ res(); }
   });
 }
+// ⭐ 单事务批量读取：替代 init() 中 14 次独立 dbGet（每次开闭一个 readonly 事务）
+function dbGetBatch(specs) {
+  return new Promise((res) => {
+    try {
+      const t = DB.transaction("kv", "readonly");
+      const s = t.objectStore("kv");
+      const result = {};
+      let pending = specs.length;
+      if (!pending) { res(result); return; }
+      specs.forEach(([key, defVal]) => {
+        const r = s.get(key);
+        r.onsuccess = () => {
+          result[key] = r.result === undefined ? defVal : r.result;
+          if (--pending === 0) res(result);
+        };
+        r.onerror = () => {
+          result[key] = defVal;
+          if (--pending === 0) res(result);
+        };
+      });
+    } catch { res({}); }
+  });
+}
 
 // ─── Utils ───
 function randomSep(){
@@ -175,20 +196,25 @@ function fmtDate(d){ return d.getFullYear()+"."+String(d.getMonth()+1).padStart(
 async function init() {
   try {
     await openDB();
-    cfg           = Object.assign({}, window.DEFAULTS.cfg,          await dbGet("cfg",{}));
-    imgs          = Object.assign({}, window.DEFAULTS.imgs,          await dbGet("imgs",{}));
-    texts         = Object.assign({}, window.DEFAULTS.texts,         await dbGet("texts",{}));
-    cards         = (await dbGet("cards",null))       || window.DEFAULTS.cards;
-    chats         = (await dbGet("chats",[]))         || [];
-    groupMembers  = (await dbGet("members",null))     || window.DEFAULTS.groupMembers;
-    sounds        = (await dbGet("sounds",[]))        || [];
-    shieldedCats  = (await dbGet("shieldedCats",[]))  || [];
-    foldedCats    = (await dbGet("foldedCats",[]))    || [];
-    anniversaries = (await dbGet("anniversaries",null))|| window.DEFAULTS.anniversaries;
-    carousel      = (await dbGet("carousel",[]))      || [];
-    surveys       = (await dbGet("surveys",null))     || window.DEFAULTS.surveys;
-    surveyRecords = (await dbGet("surveyRecords",[])) || [];
-    stickers      = (await dbGet("stickers",[]))      || [];
+    const b = await dbGetBatch([
+      ["cfg",{}],["imgs",{}],["texts",{}],["cards",null],["chats",[]],
+      ["members",null],["sounds",[]],["shieldedCats",[]],["foldedCats",[]],
+      ["anniversaries",null],["carousel",[]],["surveys",null],["surveyRecords",[]],["stickers",[]]
+    ]);
+    cfg           = Object.assign({}, window.DEFAULTS.cfg, b.cfg);
+    imgs          = Object.assign({}, window.DEFAULTS.imgs, b.imgs);
+    texts         = Object.assign({}, window.DEFAULTS.texts, b.texts);
+    cards         = b.cards       || window.DEFAULTS.cards;
+    chats         = b.chats       || [];
+    groupMembers  = b.members     || window.DEFAULTS.groupMembers;
+    sounds        = b.sounds      || [];
+    shieldedCats  = b.shieldedCats || [];
+    foldedCats    = b.foldedCats  || [];
+    anniversaries = b.anniversaries || window.DEFAULTS.anniversaries;
+    carousel      = b.carousel    || [];
+    surveys       = b.surveys     || window.DEFAULTS.surveys;
+    surveyRecords = b.surveyRecords || [];
+    stickers      = b.stickers    || [];
   } catch(e){ console.warn(e); }
 
   document.getElementById("dockL1").innerHTML = DOCK_HTML;
@@ -198,6 +224,7 @@ async function init() {
   bindImageInteractions();
   bindFilePickers();
   bindChatScroll();
+  bindChatDelegation(); /* ⭐ 事件委托：替代每条气泡的独立事件监听 */
   bindMusicPlayer();
   _backgroundPreload();
   bindGlobalClose();
@@ -243,6 +270,8 @@ function saveAllDebounced() {
   _saveTimer = setTimeout(saveAll, 300);
 }
 
+// ⭐ 缓存 [data-img] 元素列表，避免每次 syncUI 重新 querySelectorAll
+let _dataImgCache = null;
 // ─── syncUI ───
 function syncUI() {
   document.getElementById("vp").setAttribute("data-layout", cfg.layout);
@@ -252,7 +281,8 @@ function syncUI() {
     document.querySelector(`.input-style-${i}`)?.classList.toggle("hidden", cfg.chatStyle!==i);
   }
   document.querySelectorAll(".msg-in").forEach(el=>el.placeholder=cfg.inputPlaceholder||"");
-  document.querySelectorAll("[data-img]").forEach(el=>{
+  if (!_dataImgCache) _dataImgCache = Array.from(document.querySelectorAll("[data-img]"));
+  _dataImgCache.forEach(el=>{
     const k=el.dataset.img;
     if(imgs[k]){ el.src=imgs[k]; el.removeAttribute("data-empty"); }
     else { el.src=window.DEFAULTS.PH_SVG; el.setAttribute("data-empty","1"); }
@@ -808,6 +838,34 @@ function bindMosaicLongPress(){ const w=document.getElementById("mosaicWidget");
 // "jump"/flash on every send, and needless work on long chats).
 let renderedMsgCount=0, renderedLastDate="";
 
+// ⭐ 统计缓存：避免每次打开统计页都对 chats 做 6+ 次全量 filter/forEach
+let _statsCache=null, _statsDirty=true;
+function markStatsDirty(){ _statsDirty=true; }
+function computeStatsCache(){
+  if(!_statsDirty && _statsCache) return _statsCache;
+  const selfMsgs=[], oppMsgs=[], lyricMsgs=[], allReal=[];
+  let selfChars=0, oppChars=0;
+  const hours=new Array(24).fill(0);
+  const dateMap={};
+  for(let i=0;i<chats.length;i++){
+    const c=chats[i]; const tLen=(c.text||"").length; const isLyric=!!c.lyric;
+    if(!isLyric){
+      allReal.push(c);
+      if(c.sender==="self"){ selfMsgs.push(c); selfChars+=tLen; }
+      else if(c.sender==="opp"){ oppMsgs.push(c); oppChars+=tLen; }
+    } else { lyricMsgs.push(c); }
+    if(c.ts) hours[new Date(c.ts).getHours()]++;
+    if(c.date) dateMap[c.date]=(dateMap[c.date]||0)+1;
+  }
+  const avgLen=allReal.length?Math.round((selfChars+oppChars)/allReal.length):0;
+  const longestMsg=allReal.length?allReal.reduce((a,b)=>((b.text||"").length>(a.text||"").length?b:a),allReal[0]):null;
+  _statsCache={selfMsgs,oppMsgs,lyricMsgs,allReal,selfChars,oppChars,avgLen,hours,dateMap,
+    firstDate:allReal.length?allReal[0].date:null,
+    lastDate:allReal.length?allReal[allReal.length-1].date:null,
+    longestMsg,shieldedCards:cards.filter(c=>c.shielded).length};
+  _statsDirty=false; return _statsCache;
+}
+
 function buildChatCtx(){
   return {
     showAv: cfg.showAvatar, showRead: cfg.showRead, showSelfRead: cfg.showSelfRead,
@@ -817,6 +875,9 @@ function buildChatCtx(){
     readTxt: cfg.readText||"已阅",
     selfAv: imgs.selfAvatar||window.DEFAULTS.PH_SVG,
     oppAv: imgs.oppAvatar||window.DEFAULTS.PH_SVG,
+    /* ⭐ 预建 Map 消除每条消息的 O(n) linear find */
+    memMap: new Map(groupMembers.map(g=>[g.id,g])),
+    stkMap: new Map(stickers.map(s=>[s.id,s])),
   };
 }
 
@@ -831,7 +892,7 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   }
   const isSelf=m.sender==="self";
   const row=document.createElement("div"); row.className="row "+(isSelf?"self":"opp"); row.id=`msg-row-${idx}`;
-  const av=isSelf?ctx.selfAv:(m.memberId ? ((groupMembers.find(g=>g.id===m.memberId)||{}).avatar||ctx.oppAv) : (m.avatar||ctx.oppAv));
+  const av=isSelf?ctx.selfAv:(m.memberId ? ((ctx.memMap.get(m.memberId)||{}).avatar||ctx.oppAv) : (m.avatar||ctx.oppAv));
   const nm=isSelf?ctx.selfNm:(m.name||ctx.oppNm);
   const showNm = isSelf ? ctx.selfName : cfg.showName;
   let timeStr="";
@@ -857,19 +918,21 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   const quoteHtml=m.quote?`<div class="quote-line" data-jump="${escapeHtml(m.quote)}"><div class="qarm"></div><div class="qtxt">${escapeHtml(m.quote)}</div></div>`:"";
   const transClass=openTrans.has(idx)?"show":"";
   const bodyHtml = m.sticker
-    ? `<img class="sticker-msg" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy">`
+    ? `<img class="sticker-msg" data-idx="${idx}" src="${(ctx.stkMap.get(m.stickerId)||{}).src||window.DEFAULTS.PH_SVG}" loading="lazy">`
     : `<div class="bubble message ${isSelf?"message-sent":"message-received"}" data-idx="${idx}">${escapeHtml(m.text).replace(/\n/g,"<br>")}</div>
       ${m.translation?`<div class="bubble-translation ${transClass}" id="trans-${idx}">${escapeHtml(m.translation)}</div>`:""}`;
   row.innerHTML=`
-    ${ctx.showAv?`<div class="av-col"><img class="av" src="${av}">${avMetaHtml}</div>`:""}
+    ${ctx.showAv?`<div class="av-col"><img class="av" src="${av}" loading="lazy" decoding="async">${avMetaHtml}</div>`:""}
     <div class="stack">
       ${showNm?`<div class="name-tag">${escapeHtml(nm)}</div>`:""}
       ${bodyHtml}
       ${quoteHtml}${stackMetaHtml}
     </div>`;
-  if(m.sticker) bindStickerEvents(row,idx); else bindBubbleEvents(row,idx);
-  const ql=row.querySelector(".quote-line");
-  if(ql) ql.addEventListener("click",e=>{ e.stopPropagation(); jumpToMsg(ql.dataset.jump); });
+  /* ⭐ 原始代码：每气泡绑定 7 个事件监听器（mousedown/mouseup/mousemove/touchstart/touchend/touchmove/contextmenu）
+     if(m.sticker) bindStickerEvents(row,idx); else bindBubbleEvents(row,idx);
+     const ql=row.querySelector(".quote-line");
+     if(ql) ql.addEventListener("click",e=>{ e.stopPropagation(); jumpToMsg(ql.dataset.jump); });
+     改为事件委托：在 #chatFlow 上统一监听，2000 条消息只需 1 组监听器而非 14000 个 */
   frag.appendChild(row);
 }
 
@@ -907,6 +970,7 @@ function appendNewChats(){
   unreadCount=0; updateScrollBot();
 }
 
+/* ⭐ 以下两个函数改为事件委托（bindChatDelegation），不再逐气泡绑定事件
 function bindBubbleEvents(row,idx){
   const b=row.querySelector(".bubble"); if(!b) return;
   let pressTimer=null, isLong=false, startX=0, startY=0;
@@ -928,6 +992,7 @@ function bindStickerEvents(row,idx){
   b.addEventListener("touchstart",start,{passive:true}); b.addEventListener("touchend",end); b.addEventListener("touchmove",move,{passive:true});
   b.addEventListener("contextmenu",e=>{e.preventDefault();showCtxMenu(b,idx);});
 }
+*/
 
 function toggleTrans(idx){ const el=document.getElementById(`trans-${idx}`); if(!el) return; if(openTrans.has(idx)){openTrans.delete(idx);el.classList.remove("show");}else{openTrans.add(idx);el.classList.add("show");} }
 
@@ -988,7 +1053,7 @@ function bindGlobalClose(){
   });
   document.getElementById("ctxDel").addEventListener("click",async e=>{
     e.stopPropagation(); if(ctxTargetIdx<0) return;
-    const idx=ctxTargetIdx; hideCtxMenu(); chats.splice(idx,1); openTrans=new Set(); await saveAll(); renderChats();
+    const idx=ctxTargetIdx; hideCtxMenu(); chats.splice(idx,1); markStatsDirty(); openTrans=new Set(); await saveAll(); renderChats();
   });
   document.getElementById("ctxAddCard").addEventListener("click", e => {
     e.stopPropagation();
@@ -1198,6 +1263,68 @@ function jumpToMsg(t){
 }
 
 function bindChatScroll(){ document.getElementById("chatFlow").addEventListener("scroll",()=>{ const f=document.getElementById("chatFlow"); if(f.scrollHeight-f.scrollTop-f.clientHeight<60) unreadCount=0; updateScrollBot(); }); }
+
+/* ⭐ 新增：事件委托 — 在 #chatFlow 上统一监听所有气泡交互
+   替代原来每条气泡绑定 7 个事件监听器的做法（2000 条 = 14000 个监听器 → 只需 4 个） */
+function bindChatDelegation(){
+  const cf = document.getElementById("chatFlow"); if (!cf) return;
+  let pressTimer = null, isLong = false, startX = 0, startY = 0, targetIdx = -1;
+
+  const getBubbleTarget = (el) => {
+    const bubble = el.closest(".bubble");
+    if (bubble && bubble.dataset.idx !== undefined) return +bubble.dataset.idx;
+    const sticker = el.closest(".sticker-msg");
+    if (sticker && sticker.dataset.idx !== undefined) return +sticker.dataset.idx;
+    return -1;
+  };
+
+  const clearPress = () => { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } isLong = false; targetIdx = -1; };
+
+  // ⭐ pointerdown — 同时处理鼠标和触摸（长按检测）
+  cf.addEventListener("pointerdown", e => {
+    const idx = getBubbleTarget(e.target);
+    if (idx < 0) return;
+    targetIdx = idx; isLong = false;
+    startX = e.clientX; startY = e.clientY;
+    pressTimer = setTimeout(() => {
+      isLong = true;
+      if (navigator.vibrate) navigator.vibrate(22);
+      const row = document.getElementById(`msg-row-${targetIdx}`);
+      showCtxMenu(row ? (row.querySelector(".bubble") || row.querySelector(".sticker-msg")) : e.target, targetIdx);
+    }, 520);
+  });
+
+  cf.addEventListener("pointermove", e => {
+    if (!pressTimer) return;
+    if (Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10) clearPress();
+  });
+
+  cf.addEventListener("pointerup", () => { clearPress(); });
+
+  cf.addEventListener("pointercancel", () => { clearPress(); });
+
+  // ⭐ click — 短按切换翻译 / 点击引用行跳转
+  cf.addEventListener("click", e => {
+    // 引用行跳转
+    const ql = e.target.closest(".quote-line");
+    if (ql && ql.dataset.jump) { e.stopPropagation(); jumpToMsg(ql.dataset.jump); return; }
+    // 气泡短按 → 翻译切换（排除 sticker）
+    if (e.target.closest(".sticker-msg")) return;
+    const bubble = e.target.closest(".bubble");
+    if (bubble && bubble.dataset.idx !== undefined) {
+      toggleTrans(+bubble.dataset.idx);
+    }
+  });
+
+  // ⭐ contextmenu — 右键菜单
+  cf.addEventListener("contextmenu", e => {
+    const idx = getBubbleTarget(e.target);
+    if (idx < 0) return;
+    e.preventDefault();
+    const row = document.getElementById(`msg-row-${idx}`);
+    showCtxMenu(row ? (row.querySelector(".bubble") || row.querySelector(".sticker-msg")) : e.target, idx);
+  });
+}
 /* ⭐ 原始代码：
 function updateScrollBot(){ const f=document.getElementById("chatFlow"); if(!f) return; const near=f.scrollHeight-f.scrollTop-f.clientHeight<60; document.getElementById("scrollBot").classList.toggle("on",!near&&chats.length>5); const ub=document.getElementById("unreadBadge"); if(unreadCount>0&&!near){ub.classList.remove("hidden");ub.innerText=unreadCount;}else ub.classList.add("hidden"); }
 */
@@ -1247,16 +1374,23 @@ window.sendMsg = async()=>{
   if(t.includes("【翻译】")){ const p=t.split("【翻译】"); userText=p[0].trim(); userTrans=p[1].trim(); }
   const msgObj={sender:"self",text:userText,translation:userTrans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime()};
   if(pendingQuote) msgObj.quote=pendingQuote;
-  chats.push(msgObj); document.querySelectorAll(".msg-in").forEach(el=>el.value=""); window.clearPendingQuote();
+  _addChatMsg(msgObj); document.querySelectorAll(".msg-in").forEach(el=>el.value=""); window.clearPendingQuote();
   if(cfg.soundOn) playSoundById(cfg.activeSoundId || "__builtin_thud1__");
   if(navigator.vibrate) navigator.vibrate(18);
   const _sb=document.querySelector('.input-style-1:not(.hidden) .in-btn.send,.input-style-2:not(.hidden) .i2-send,.input-style-3:not(.hidden) .i3-send:not(.alt),.input-style-4:not(.hidden) .i4-send:not(.alt)');
   if(_sb){_sb.classList.add('sent-flash');setTimeout(()=>_sb.classList.remove('sent-flash'),400);}
   /* ⭐ 原始代码：await saveAll(); appendNewChats(); getActiveInput()?.focus(); */
-  await saveAll(); appendNewChats();
+  /* ⭐ 改用防抖写入，避免每条消息都触发完整 DB 序列化（消息多时 saveAll 会阻塞主线程） */
+  saveAllDebounced(); appendNewChats();
   /* ⭐ 发送后强制滚到底部，确保最新消息可见 */
   const cf=document.getElementById("chatFlow"); if(cf) cf.scrollTop=cf.scrollHeight;
   /* ⭐ 发送后让输入框失焦，收起键盘，使用户可以完整看到聊天内容 */
+  /* ⭐ 原始代码（上一轮修改）：发送后重新聚焦输入框并延迟滚底，导致键盘再次弹出 */
+  /* getActiveInput()?.focus();
+  setTimeout(() => {
+    const cf2=document.getElementById("chatFlow");
+    if(cf2) cf2.scrollTop=cf2.scrollHeight;
+  }, 350); */
   getActiveInput()?.blur();
   // 用户发消息后，彼按概率自动回复（replyProb: 0-100，默认60%）
   if(!replyTimer && !typingNode && Math.random() * 100 < (cfg.replyProb ?? 60)){
@@ -1301,8 +1435,9 @@ async function fireReply(){
       const stk=stickerPool[Math.floor(Math.random()*stickerPool.length)];
       let nameS=texts.opp_name||"温语", avatarS=imgs.oppAvatar||"", memberIdS="";
       if(cfg.groupMode&&groupMembers.length){ const ms=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameS=ms.name; avatarS=ms.avatar||window.DEFAULTS.PH_SVG; memberIdS=ms.id; }
-      chats.push({sender:"opp",text:"[表情包]",sticker:true,stickerId:stk.id,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameS,memberId:memberIdS});
-      await saveAll();
+      _addChatMsg({sender:"opp",text:"[表情包]",sticker:true,stickerId:stk.id,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameS,memberId:memberIdS});
+      /* ⭐ 改用防抖写入，与文字回复路径一致 */
+      saveAllDebounced();
       if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
       else { if(cfg.popupOn) showPopup("[表情包]",nameS,avatarS); }
       notify("[表情包]",nameS,avatarS);
@@ -1329,18 +1464,19 @@ async function fireReply(){
       if(cfg.groupMode&&groupMembers.length){ const m2=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name2=m2.name; avatar2=m2.avatar||window.DEFAULTS.PH_SVG; memberId2=m2.id; }
       for(let fi=0;fi<arr.length-1;fi++){
         const nt=new Date(now.getTime()+fi*500);
-        chats.push({sender:"opp",text:arr[fi],translation:transArr[fi]||"",time:fmtTime(nt),timeWithSec:fmtTime(nt,true),date:fmtDate(nt),ts:nt.getTime(),lyric:false,quote:"",name:name2,memberId:memberId2,fragments:[arr[fi]]});
+        _addChatMsg({sender:"opp",text:arr[fi],translation:transArr[fi]||"",time:fmtTime(nt),timeWithSec:fmtTime(nt,true),date:fmtDate(nt),ts:nt.getTime(),lyric:false,quote:"",name:name2,memberId:memberId2,fragments:[arr[fi]]});
       }
       text=arr[arr.length-1]; trans=transArr[arr.length-1]||"";
     }
     else { text=arr[0]; if(transArr.length) trans=transArr[0]; }
   }
   let quote="";
-  if(!isLyric&&cfg.quoteOn&&Math.random()<0.3){ const my=chats.filter(c=>c.sender==="self").slice(-10); if(my.length) quote=my[Math.floor(Math.random()*my.length)].text; }
+  if(!isLyric&&cfg.quoteOn&&Math.random()<0.3){ const my=chats.slice(-50).filter(c=>c.sender==="self").slice(-10); if(my.length) quote=my[Math.floor(Math.random()*my.length)].text; }
   let name=texts.opp_name||"温语", avatar=imgs.oppAvatar||"", memberId="";
   if(cfg.groupMode&&groupMembers.length){ const m=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name=m.name; avatar=m.avatar||window.DEFAULTS.PH_SVG; memberId=m.id; }
-  chats.push({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,memberId,fragments});
-  await saveAll();
+  _addChatMsg({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,memberId,fragments});
+  /* ⭐ 改用防抖写入，避免每条消息都完整序列化写入 DB（最大性能瓶颈之一） */
+  saveAllDebounced();
   if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
   else { if(cfg.popupOn) showPopup(text,name,avatar); }
   notify(text,name,avatar);
@@ -1374,7 +1510,7 @@ function scheduleActive(resume = false){
   }, wait);
 }
 
-window.clearAllChats = async()=>{ if(!confirm("确实要清空？")) return; chats=[]; openTrans=new Set(); await saveAll(); renderChats(); toast("已清空"); };
+window.clearAllChats = async()=>{ if(!confirm("确实要清空？")) return; chats=[]; markStatsDirty(); openTrans=new Set(); await saveAll(); renderChats(); toast("已清空"); };
 // ⭐ 存储上限（防无限膨胀）
 const CHAT_MAX = 2000;
 const MAX_STICKERS = 200;
@@ -1382,9 +1518,11 @@ const MAX_CARDS = 5000;
 const MAX_SOUNDS = 50;
 const MAX_CAROUSEL = 20;
 function _addChatMsg(msg) {
-  chats.push(msg);
+  chats.push(msg); markStatsDirty();
   if (chats.length > CHAT_MAX + 500) {
     chats = chats.slice(-CHAT_MAX);
+    /* ⭐ 裁剪后 DOM 索引偏移，重置渲染游标让 appendNewChats 自动走 renderChats 全量重建 */
+    renderedMsgCount = 0;
     saveAllDebounced();
   }
 }
@@ -1432,7 +1570,7 @@ window.clearTTSCache = () => {
 // ⭐ 清理旧聊天记录（手动）
 window.trimOldChats = () => {
   if(!confirm(`保留最近 ${CHAT_MAX} 条，删除更早的 ${Math.max(0,chats.length-CHAT_MAX)} 条？`)) return;
-  chats = chats.slice(-CHAT_MAX); saveAll(); renderChats(); toast('已清理');
+  chats = chats.slice(-CHAT_MAX); markStatsDirty(); saveAll(); renderChats(); toast('已清理');
 };
 
 // ─── Popup ───
@@ -1640,7 +1778,7 @@ window.switchCardsTab = tab => {
   document.getElementById("cardsCloudSkBtn")?.classList.toggle("hidden", tab==="cards");
   const btn=document.querySelector(".batch-toggle-btn");
   if(btn) btn.style.opacity=(tab==="stickers"?isStickerBatchSelecting:isBatchSelecting)?"1":".5";
-  if(tab==="stickers"){ stickerLibPage=0; window.renderStickers(); }
+  if(tab==="stickers") window.renderStickers();
 };
 window.headerToggleBatch = ()=>{ if(cardsActiveTab==="stickers") window.toggleStickerBatchMode(); else window.toggleBatchMode(); };
 window.headerAdd = ()=>{ if(cardsActiveTab==="stickers") window.openAddSticker(); else window.openAddCard(); };
@@ -1650,11 +1788,7 @@ window.renderStickers = () => {
   const grid=document.getElementById("stickerGrid"); if(!grid) return;
   grid.innerHTML="";
   if(!stickers.length){ grid.innerHTML=`<div class="empty-tip" style="grid-column:1/-1;padding:40px;text-align:center;">表情包库此时空空如也</div>`; updateStickerBatch(); return; }
-  const totalPages=Math.ceil(stickers.length/STICKER_LIB_PAGE_SIZE);
-  if(stickerLibPage>=totalPages) stickerLibPage=totalPages-1;
-  if(stickerLibPage<0) stickerLibPage=0;
-  const page=stickers.slice(stickerLibPage*STICKER_LIB_PAGE_SIZE,(stickerLibPage+1)*STICKER_LIB_PAGE_SIZE);
-  page.forEach(s=>{
+  stickers.forEach(s=>{
     const it=document.createElement("div");
     it.className="sticker-item"+(s.shielded?" shielded":"");
     const chkHtml=isStickerBatchSelecting?`<input type="checkbox" class="chk" ${stickerSelected.includes(s.id)?"checked":""} onchange="event.stopPropagation();stickerSelToggle('${s.id}',this.checked)">`:"";
@@ -1668,16 +1802,8 @@ window.renderStickers = () => {
     }
     grid.appendChild(it);
   });
-  if(totalPages>1){
-    const pager=document.createElement("div");
-    pager.className="sticker-pager";
-    pager.innerHTML=`<button class="sp-pg-btn" onclick="stickerLibPrevPage()" ${stickerLibPage===0?'disabled':''}>◀</button><span class="sp-pg-num">${stickerLibPage+1}/${totalPages}</span><button class="sp-pg-btn" onclick="stickerLibNextPage()" ${stickerLibPage>=totalPages-1?'disabled':''}>▶</button>`;
-    grid.appendChild(pager);
-  }
   updateStickerBatch();
 };
-window.stickerLibPrevPage=()=>{if(stickerLibPage>0){stickerLibPage--;window.renderStickers();}};
-window.stickerLibNextPage=()=>{const tp=Math.ceil(stickers.length/STICKER_LIB_PAGE_SIZE);if(stickerLibPage<tp-1){stickerLibPage++;window.renderStickers();}};
 const STICKER_EYE_SVG=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const STICKER_EYE_OFF_SVG=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a18.5 18.5 0 0 1 4.22-5.06M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 const STICKER_X_SVG=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
@@ -1761,7 +1887,7 @@ window.toggleStickerPicker = () => {
   const p=document.getElementById("stickerPicker"); if(!p) return;
   const opening=!p.classList.contains("on");
   p.classList.toggle("on");
-  if(opening){ stickerPickerPage=0; renderStickerPickerGrid(); }
+  if(opening) renderStickerPickerGrid();
 };
 window.gotoStickerLibrary = () => {
   document.getElementById("stickerPicker")?.classList.remove("on");
@@ -1771,32 +1897,15 @@ window.gotoStickerLibrary = () => {
 function renderStickerPickerGrid(){
   const g=document.getElementById("spGrid"); if(!g) return;
   if(!stickers.length){ g.innerHTML=`<div class="sp-empty">还没有表情包<span onclick="gotoStickerLibrary()">去添加</span></div>`; return; }
-  const visible=stickers.filter(s=>!s.shielded);
-  if(!visible.length){ g.innerHTML=`<div class="sp-empty">没有可用的表情包</div>`; return; }
-  const totalPages=Math.ceil(visible.length/STICKER_PICKER_PAGE_SIZE);
-  if(stickerPickerPage>=totalPages) stickerPickerPage=totalPages-1;
-  if(stickerPickerPage<0) stickerPickerPage=0;
-  const page=visible.slice(stickerPickerPage*STICKER_PICKER_PAGE_SIZE,(stickerPickerPage+1)*STICKER_PICKER_PAGE_SIZE);
-  let html=page.map(s=>`<div class="sp-item" onclick="sendSticker('${s.id}')"><img src="${s.src}" loading="lazy"></div>`).join("");
-  if(totalPages>1){
-    html+=`<div class="sp-pager">
-      <button class="sp-pg-btn" onclick="event.stopPropagation();stickerPickerPrevPage()" ${stickerPickerPage===0?'disabled':''}>◀</button>
-      <span class="sp-pg-num">${stickerPickerPage+1}/${totalPages}</span>
-      <button class="sp-pg-btn" onclick="event.stopPropagation();stickerPickerNextPage()" ${stickerPickerPage>=totalPages-1?'disabled':''}>▶</button>
-    </div>`;
-  }
-  g.innerHTML=html;
+  g.innerHTML=stickers.map(s=>`<div class="sp-item" onclick="sendSticker('${s.id}')"><img src="${s.src}" loading="lazy"></div>`).join("");
 }
-window.stickerPickerPrevPage=()=>{if(stickerPickerPage>0){stickerPickerPage--;renderStickerPickerGrid();}};
-window.stickerPickerNextPage=()=>{const v=stickers.filter(s=>!s.shielded);const tp=Math.ceil(v.length/STICKER_PICKER_PAGE_SIZE);if(stickerPickerPage<tp-1){stickerPickerPage++;renderStickerPickerGrid();}};
 window.sendSticker = async id => {
   const s=stickers.find(x=>x.id===id); if(!s) return;
   const now=new Date();
-  chats.push({sender:"self", text:"[表情包]", sticker:true, stickerId:id, time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime()});
+  _addChatMsg({sender:"self", text:"[表情包]", sticker:true, stickerId:id, time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime()});
   window.clearPendingQuote();
   if(cfg.soundOn) playSoundById(cfg.activeSoundId || "__builtin_thud1__");
   if(navigator.vibrate) navigator.vibrate(18);
-  document.getElementById("stickerPicker")?.classList.remove("on");
   await saveAll(); appendNewChats();
 };
 
@@ -1847,14 +1956,10 @@ function renderStats() {
   if (!deck) return;
   deck.innerHTML = "";
 
-  const selfMsgs  = chats.filter(c => c.sender === "self" && !c.lyric);
-  const oppMsgs   = chats.filter(c => c.sender === "opp"  && !c.lyric);
-  const lyricMsgs = chats.filter(c => c.lyric);
-  const allReal   = chats.filter(c => !c.lyric);
-
-  const selfChars = selfMsgs.reduce((s, m) => s + (m.text || "").length, 0);
-  const oppChars  = oppMsgs.reduce((s, m)  => s + (m.text || "").length, 0);
-  const avgLen    = allReal.length ? Math.round((selfChars + oppChars) / allReal.length) : 0;
+  // ⭐ 单次遍历聚合，消除 6+ 次全量 filter/forEach
+  const S = computeStatsCache();
+  const { selfMsgs, oppMsgs, lyricMsgs, allReal, selfChars, oppChars, avgLen,
+          hours, dateMap, firstDate, lastDate, longestMsg, shieldedCards } = S;
 
   // ── 概览 ──
   const ovSec = document.createElement("div");
@@ -1866,18 +1971,14 @@ function renderStats() {
     { n: allReal.length,  l: "对话总计", sub: `歌词 ${lyricMsgs.length} 条`, full: true },
     { n: selfMsgs.length, l: "我",        sub: `落字 ${selfChars}` },
     { n: oppMsgs.length,  l: "彼",        sub: `落字 ${oppChars}` },
-    { n: cards.length,    l: "字卡",       sub: `屏蔽 ${cards.filter(c=>c.shielded).length}` },
+    { n: cards.length,    l: "字卡",       sub: `屏蔽 ${shieldedCards}` },
     { n: avgLen,          l: "均长",       sub: "字 / 条" }
   ];
 
-  ovData.forEach((d, i) => {
+  ovData.forEach((d) => {
     const card = document.createElement("div");
     card.className = "stat-ov-card" + (d.full ? " full" : "");
-    card.innerHTML = `
-      <div class="ov-n">${d.n}</div>
-      <div class="ov-l">${d.l}</div>
-      <div class="ov-sub">${d.sub}</div>
-      <div class="ov-bar"></div>`;
+    card.innerHTML = `<div class="ov-n">${d.n}</div><div class="ov-l">${d.l}</div><div class="ov-sub">${d.sub}</div><div class="ov-bar"></div>`;
     ovGrid.appendChild(card);
   });
 
@@ -1887,9 +1988,6 @@ function renderStats() {
   // ── 昼夜分布 ──
   const hourSec = document.createElement("div");
   hourSec.innerHTML = `<div class="stat-block-header"><span class="stat-block-title">昼夜分布</span></div>`;
-
-  const hours = new Array(24).fill(0);
-  chats.forEach(c => { if (c.ts) hours[new Date(c.ts).getHours()]++; });
   const maxH = Math.max(1, ...hours);
 
   const hourGrid = document.createElement("div");
@@ -1914,21 +2012,16 @@ function renderStats() {
   deck.appendChild(hourSec);
 
   // ── 速率趋势 ──
-  const dateMap = {};
-  chats.forEach(c => { if (c.date) dateMap[c.date] = (dateMap[c.date] || 0) + 1; });
   const dates = Object.keys(dateMap).sort();
-
   if (dates.length > 1) {
     const rateSec = document.createElement("div");
-    rateSec.innerHTML = `
-      <div class="stat-block-header">
+    rateSec.innerHTML = `<div class="stat-block-header">
         <span class="stat-block-title">速率</span>
         <span class="stat-block-meta">近 ${Math.min(dates.length, 30)} 天</span>
       </div>`;
 
     const rateWrap = document.createElement("div");
     rateWrap.className = "stat-rate-wrap";
-
     const recent = dates.slice(-30);
     const maxV = Math.max(1, ...recent.map(d => dateMap[d]));
     const chart = document.createElement("div");
@@ -1958,7 +2051,6 @@ function renderStats() {
   // ── 高频词 ──
   const wordSec = document.createElement("div");
   wordSec.innerHTML = `<div class="stat-block-header"><span class="stat-block-title">高频词</span></div>`;
-
   const tabWrap = document.createElement("div");
   tabWrap.style.cssText = "display:flex;flex-direction:column;gap:8px;";
 
@@ -1974,11 +2066,7 @@ function renderStats() {
       l: "彼",
       arr: (() => {
         const a = [];
-        oppMsgs.forEach(m =>
-          cfg.sentenceJoin && m.fragments?.length
-            ? a.push(...m.fragments)
-            : a.push(m.text)
-        );
+        oppMsgs.forEach(m => cfg.sentenceJoin && m.fragments?.length ? a.push(...m.fragments) : a.push(m.text));
         return a;
       })()
     },
@@ -1992,15 +2080,12 @@ function renderStats() {
     btn.onclick = () => {
       tabBtns.querySelectorAll(".stat-tab-btn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      tabPanels.querySelectorAll(".stat-tab-panel").forEach((p, pi) =>
-        p.classList.toggle("active", pi === i)
-      );
+      tabPanels.querySelectorAll(".stat-tab-panel").forEach((p, pi) => p.classList.toggle("active", pi === i));
     };
     tabBtns.appendChild(btn);
 
     const panel = document.createElement("div");
     panel.className = "stat-tab-panel" + (i === 0 ? " active" : "");
-
     const top = tally(td.arr);
     if (!top.length) {
       panel.innerHTML = `<div class="empty-tip">—</div>`;
@@ -2011,20 +2096,16 @@ function renderStats() {
       top.forEach(([word, cnt], ri) => {
         const item = document.createElement("div");
         item.className = "stat-word-item";
-        item.innerHTML = `
-          <div class="swi-top">
+        item.innerHTML = `<div class="swi-top">
             <span class="swi-rank">${ri + 1}</span>
             <span class="swi-text">${escapeHtml(word)}</span>
             <span class="swi-cnt">${cnt}</span>
           </div>
-          <div class="swi-track">
-            <div class="swi-fill" style="width:${(cnt / maxVal * 100).toFixed(1)}%"></div>
-          </div>`;
+          <div class="swi-track"><div class="swi-fill" style="width:${(cnt / maxVal * 100).toFixed(1)}%"></div></div>`;
         list.appendChild(item);
       });
       panel.appendChild(list);
     }
-
     tabPanels.appendChild(panel);
   });
 
@@ -2037,26 +2118,19 @@ function renderStats() {
   if (allReal.length) {
     const detailSec = document.createElement("div");
     detailSec.innerHTML = `<div class="stat-block-header"><span class="stat-block-title">细节</span></div>`;
-
-    const first   = allReal[0];
-    const last    = allReal[allReal.length - 1];
-    const longest = [...allReal].sort((a,b) => (b.text||"").length - (a.text||"").length)[0];
-
     const dGrid = document.createElement("div");
     dGrid.className = "stat-detail-grid";
-
     [
-      { l: "首条",     v: first.date || "—" },
-      { l: "最新",     v: last.date  || "—" },
-      { l: "最长",     v: longest ? longest.text.slice(0,20) + (longest.text.length>20?"…":"") : "—" },
-      { l: "最长字数", v: longest ? `${longest.text.length} 字` : "—" }
+      { l: "首条",     v: firstDate || "—" },
+      { l: "最新",     v: lastDate  || "—" },
+      { l: "最长",     v: longestMsg ? longestMsg.text.slice(0, 20) + (longestMsg.text.length > 20 ? "…" : "") : "—" },
+      { l: "最长字数", v: longestMsg ? `${longestMsg.text.length} 字` : "—" }
     ].forEach(d => {
       const card = document.createElement("div");
       card.className = "stat-detail-card";
       card.innerHTML = `<div class="dc-label">${d.l}</div><div class="dc-value">${escapeHtml(d.v)}</div>`;
       dGrid.appendChild(card);
     });
-
     detailSec.appendChild(dGrid);
     deck.appendChild(detailSec);
   }
@@ -2070,7 +2144,7 @@ window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers
 function onPickJson(e){
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) chats=d.chats; if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); renderCarousel(); renderMosaic();  toast("还原完毕"); }catch{ alert("数据损坏"); } };
+  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) {chats=d.chats; markStatsDirty();} if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); renderCarousel(); renderMosaic();  toast("还原完毕"); }catch{ alert("数据损坏"); } };
   r.readAsText(f);
 }
 window.factoryReset = async()=>{ if(!confirm("确认销毁并重置？")) return; indexedDB.deleteDatabase(DB_NAME); setTimeout(()=>location.reload(),200); };
@@ -2769,6 +2843,7 @@ window.removeSepSymbol = async (i) => {
   renderSepSettings();
 };
 
+// ════════════════════════════════════════════
 // ══ 问卷调查 (Survey) ══
 // ════════════════════════════════════════════
 
@@ -2831,17 +2906,16 @@ window.openSurveyDetail = (id) => {
 
 window.openRecordSummary = (id) => {
   const r = surveyRecords.find(x=>x.id===id); if (!r) return;
-  const oppNm = texts.opp_name||"温语";
   const d = new Date(r.ts);
   let html = `<div class="fld-tip">${fmtDate(d)} ${fmtTime(d)}</div>`;
   r.answers.forEach(a=>{
     html += `<div class="qf-sum-item">
       <div class="qf-sum-q">${escapeHtml(a.q)}</div>
-      <div class="qf-sum-row">我　　　${escapeHtml(a.self)}</div>
-      <div class="qf-sum-row">${escapeHtml(oppNm)}　　　${escapeHtml(a.opp)}</div>`;
+      <div class="qf-sum-row">我　${escapeHtml(a.self)}</div>
+      <div class="qf-sum-row">彼　${escapeHtml(a.opp)}</div>`;
     if (a.oppComment !== undefined){
       html += `<div class="qf-sum-row">我的评论　${escapeHtml(a.selfComment || "（无）")}</div>
-        <div class="qf-sum-row">${escapeHtml(oppNm)}的评论　${escapeHtml(a.oppComment)}</div>`;
+        <div class="qf-sum-row">彼的评论　${escapeHtml(a.oppComment)}</div>`;
     }
     html += `</div>`;
   });
@@ -2877,31 +2951,21 @@ window.exportSurvey = (id) => {
   toast("已导出");
 };
 
-/* 🌙 新增：支持 .txt 文本文件导入（原始仅支持 JSON） */
 function onPickSurvey(e){
   const f = e.target.files[0]; if (!f) return;
-  const isTxt = f.name.endsWith(".txt");
   const r = new FileReader();
   r.onload = async ev => {
     try {
-      const text = ev.target.result;
-      let importData;
-      if (isTxt){
-        importData = parseSurveyTxt(text);
-      } else {
-        importData = JSON.parse(text);
-      }
-      if (!importData.title || !Array.isArray(importData.questions)) { toast("文件格式不正确","warn"); return; }
-      const qs = importData.questions.map(q=>({
-        text: q.text || "",
-        options: Array.isArray(q.options) ? q.options.filter(o=>o) : [],
-        needComment: true  /* 导入问卷默认开启评论 */
-      })).filter(q=>q.text && q.options.length>=2);
-      if (!qs.length){ toast("没有有效题目","warn"); return; }
+      const d = JSON.parse(ev.target.result);
+      if (!d.title || !Array.isArray(d.questions)) { toast("文件格式不正确","warn"); return; }
       surveys.push({
         id: "s"+Date.now(),
-        title: importData.title,
-        questions: qs
+        title: d.title,
+        questions: d.questions.map(q=>({
+          text: q.text || "",
+          options: Array.isArray(q.options) ? q.options.filter(o=>o) : [],
+          needComment: !!q.needComment
+        })).filter(q=>q.text && q.options.length>=2)
       });
       await saveAll();
       renderSurveys();
@@ -2910,29 +2974,6 @@ function onPickSurvey(e){
     e.target.value = "";
   };
   r.readAsText(f);
-}
-
-/* 🌙 新增：解析 txt 格式问卷（第一行标题，--- 分隔题目，首行题目，后续行选项） */
-function parseSurveyTxt(text){
-  const lines = text.split(/\r?\n/);
-  const title = (lines[0] || "").trim();
-  const questions = [];
-  let curQ = null;
-  for (let i = 1; i < lines.length; i++){
-    const line = lines[i].trim();
-    if (!line) continue;
-    if (line === "---"){
-      if (curQ && curQ.text && curQ.options.length >= 2) questions.push({...curQ});
-      curQ = { text: "", options: [], needComment: true };
-    } else if (!curQ){
-    } else if (!curQ.text){
-      curQ.text = line;
-    } else {
-      curQ.options.push(line);
-    }
-  }
-  if (curQ && curQ.text && curQ.options.length >= 2) questions.push(curQ);
-  return { title, questions };
 }
 
 // ── 新建 / 编辑 ──
@@ -3112,82 +3153,57 @@ let sfTimer = null;
 function openSurveyFull(){
   document.getElementById("surveyFull").classList.add("on");
 }
-/* 🌙 关闭时额外清理 _oppTimer（对方独立选择计时器） */
 window.closeSurveyFull = () => {
   clearTimeout(sfTimer); sfTimer = null;
-  if (surveyFill && surveyFill._oppTimer){ clearTimeout(surveyFill._oppTimer); surveyFill._oppTimer = null; }
   surveyFill = null;
   document.getElementById("surveyFull").classList.remove("on");
 };
 
-/* 🌙 新增：对方独立自由选择，不等待用户先选答案 */
 window.startSurveyFill = (id) => {
   const survey = surveys.find(s=>s.id===id);
   if (!survey || !survey.questions.length){ toast("问卷为空","warn"); return; }
-  surveyFill = { surveyId:id, survey, qIndex:0, selfIdx:-1, oppIdx:-1, stage:"pick", reselectMsg:"", curAnswer:null, answers:[], _oppTimer:null };
+  surveyFill = { surveyId:id, survey, qIndex:0, selfIdx:-1, oppIdx:-1, stage:"pick", reselectMsg:"", curAnswer:null, answers:[] };
   openSurveyFull();
   renderFillStep();
-  _startOppSelection();
 };
 
-/* 🌙 用户选择时不再自动触发对方选择（对方由独立计时器控制） */
 window.fillSelectSelf = (i) => {
   const sf = surveyFill; if (!sf || sf.stage!=="pick") return;
+  const firstPick = sf.selfIdx === -1;
   sf.selfIdx = i;
+  if (firstPick){
+    const q = sf.survey.questions[sf.qIndex];
+    sf.oppIdx = randInt(0, q.options.length-1);
+  }
   renderFillStep();
 };
 
-/* 🌙 新增：对方在5-20秒内独立随机选择 */
-function _startOppSelection(){
-  const sf = surveyFill; if (!sf) return;
-  if (sf._oppTimer){ clearTimeout(sf._oppTimer); sf._oppTimer = null; }
-  if (sf.oppIdx > -1) return;
-  const delay = randInt(5, 20) * 1000;
-  sf._oppTimer = setTimeout(() => {
-    const sf2 = surveyFill;
-    if (!sf2 || sf2.oppIdx > -1) return;
-    const q = sf2.survey.questions[sf2.qIndex];
-    sf2.oppIdx = randInt(0, q.options.length - 1);
-    sf2._oppTimer = null;
-    renderFillStep();
-  }, delay);
-}
-
-/* 🌙 重选：5-20秒等待，50%接受/拒绝；拒绝后恢复原选项，不再重新等待 */
+// "重选"：邀请对方重新选择，1~3秒缓冲，对方可能拒绝重选请求
 window.fillReselect = () => {
   const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1) return;
-  /* 🌙 保存重选前的对方选项，拒绝时恢复 */
-  const prevOppIdx = sf.oppIdx;
-  sf.oppIdx = -1;
-  if (sf._oppTimer){ clearTimeout(sf._oppTimer); sf._oppTimer = null; }
   sf.stage = "reselecting";
   sf.reselectMsg = "对方正在重新选择…";
   renderFillStep();
-  sf._oppTimer = setTimeout(()=>{
-    const sf2 = surveyFill; if (!sf2) return;
+  clearTimeout(sfTimer);
+  sfTimer = setTimeout(()=>{
     if (Math.random() < 0.5){
-      /* 🌙 拒绝重选 → 恢复原选项，回到 pick，不重新计时 */
-      sf2.oppIdx = prevOppIdx;
-      sf2.stage = "reselect-refused";
-      sf2.reselectMsg = "对方拒绝了重选请求";
-      sf2._oppTimer = null;
+      sf.stage = "reselect-refused";
+      sf.reselectMsg = "对方拒绝了重选请求";
       renderFillStep();
-      sf2._oppTimer = setTimeout(()=>{ sf2.stage="pick"; renderFillStep(); }, 1100);
+      sfTimer = setTimeout(()=>{ sf.stage="pick"; renderFillStep(); }, 1100);
     } else {
-      const q = sf2.survey.questions[sf2.qIndex];
-      sf2.oppIdx = randInt(0, q.options.length - 1);
-      sf2.stage = "reselect-done";
-      sf2.reselectMsg = "选择完毕";
-      sf2._oppTimer = null;
+      const q = sf.survey.questions[sf.qIndex];
+      sf.oppIdx = randInt(0, q.options.length-1);
+      sf.stage = "reselect-done";
+      sf.reselectMsg = "选择完毕";
       renderFillStep();
-      sf2._oppTimer = setTimeout(()=>{ sf2.stage="pick"; renderFillStep(); }, 900);
+      sfTimer = setTimeout(()=>{ sf.stage="pick"; renderFillStep(); }, 900);
     }
-  }, randInt(5, 20) * 1000);
+  }, randInt(1,3)*1000);
 };
 
-/* 🌙 双方都必须选择后，下一步才可用 */
 window.fillNext = () => {
-  const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1 || sf.oppIdx===-1) return;
+  const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1) return;
   proceedAfterPick();
 };
 
@@ -3195,18 +3211,16 @@ function proceedAfterPick(){
   const sf = surveyFill;
   const q = sf.survey.questions[sf.qIndex];
   sf.curAnswer = { q: q.text, self: q.options[sf.selfIdx], opp: q.options[sf.oppIdx] };
-  console.log('📋 proceedAfterPick · needComment='+q.needComment+' · qIndex='+sf.qIndex+' · q='+q.text);
   if (q.needComment){
     sf.stage = "comment-wait";
     renderFillStep();
     clearTimeout(sfTimer);
-    /* 🌙 评论等待5-30秒（原始3-10秒） */
     sfTimer = setTimeout(()=>{
       sf.curAnswer.oppComment = generateOppComment();
       sf.curAnswer.selfComment = "";
       sf.stage = "comment";
       renderFillStep();
-    }, randInt(5,30)*1000);
+    }, randInt(3,10)*1000);
   } else {
     sf.answers.push(sf.curAnswer);
     nextQuestion();
@@ -3221,14 +3235,12 @@ window.fillNextFromComment = () => {
   nextQuestion();
 };
 
-/* 🌙 进入下一题时自动启动对方选择计时器 */
 function nextQuestion(){
   const sf = surveyFill;
   sf.qIndex++;
   sf.selfIdx = -1; sf.oppIdx = -1; sf.stage = "pick"; sf.reselectMsg = ""; sf.curAnswer = null;
-  if (sf._oppTimer){ clearTimeout(sf._oppTimer); sf._oppTimer = null; }
   if (sf.qIndex >= sf.survey.questions.length) renderFillSummary();
-  else { renderFillStep(); _startOppSelection(); }
+  else renderFillStep();
 }
 
 function oppBlock(q, sf, dim){
@@ -3242,51 +3254,36 @@ function indicatorHtml(msg, spinning){
   return `<div class="qf-indicator">${icon}<span>${escapeHtml(msg)}</span></div>`;
 }
 
-/* 🌙 重写渲染：对方独立计时选择，不依赖用户先选 */
 function renderFillStep(){
   const sf = surveyFill;
   const q = sf.survey.questions[sf.qIndex];
   document.getElementById("sfFullTitle").innerText = sf.survey.title;
   document.getElementById("sfFullProgress").innerText = `${sf.qIndex+1} / ${sf.survey.questions.length}`;
 
-  const oppNm = texts.opp_name||"温语";
-  /* 🌙 题目旁显示是否为评论题 */
-  const cmtHint = q.needComment ? ' <span class="qf-cmt-hint">含评论</span>' : '';
-  let html = `<div class="qf-question">${escapeHtml(q.text)}${cmtHint}</div><div class="qf-options">`;
+  let html = `<div class="qf-question">${escapeHtml(q.text)}</div><div class="qf-options">`;
   q.options.forEach((opt,i)=>{
-    /* 🌙 选择后双方昵称出现在对应选项后面，用户选项不高亮 */
-    let badgeHtml = '';
-    if (i===sf.selfIdx) badgeHtml += '<span class="qf-badge self">我</span>';
-    if (i===sf.oppIdx) badgeHtml += `<span class="qf-badge opp">${escapeHtml(oppNm)}</span>`;
-    html += `<div class="qf-opt" onclick="fillSelectSelf(${i})">${escapeHtml(opt)}${badgeHtml}</div>`;
+    html += `<div class="qf-opt ${i===sf.selfIdx?"selected":""}" onclick="fillSelectSelf(${i})">${escapeHtml(opt)}</div>`;
   });
   html += `</div>`;
 
-  if (sf.stage === "pick"){
-    if (sf.oppIdx > -1){
-      if (sf.selfIdx > -1){
-        html += `<div class="qf-actions">
-          <button class="pill-btn" onclick="fillReselect()">重选</button>
-          <button class="pill-btn" onclick="fillNext()">下一步</button>
-        </div>`;
-      }
-    } else {
-      /* 🌙 等待对方选择中不显示高亮块，仅状态指示 */
-      html += indicatorHtml("等待对方选择中…", true);
+  if (sf.selfIdx > -1){
+    if (sf.stage === "pick"){
+      html += oppBlock(q,sf) + `<div class="qf-actions">
+        <button class="pill-btn" onclick="fillReselect()">重选</button>
+        <button class="pill-btn" onclick="fillNext()">下一步</button>
+      </div>`;
+    } else if (sf.stage === "reselecting"){
+      html += oppBlock(q,sf,true) + indicatorHtml(sf.reselectMsg, true);
+    } else if (sf.stage === "reselect-refused" || sf.stage === "reselect-done"){
+      html += oppBlock(q,sf) + indicatorHtml(sf.reselectMsg, false);
+    } else if (sf.stage === "comment-wait"){
+      html += oppBlock(q,sf) + indicatorHtml("对方正在输入评论…", true);
+    } else if (sf.stage === "comment"){
+      html += oppBlock(q,sf)
+        + `<div class="qf-comment"><div class="qf-comment-label">对方评论</div><div class="qf-comment-text">${escapeHtml(sf.curAnswer.oppComment)}</div></div>
+        <textarea class="fld area" id="qfSelfComment" placeholder="写下你的评论…（可留空）"></textarea>
+        <button class="pill-btn" onclick="fillNextFromComment()">下一步</button>`;
     }
-  } else if (sf.stage === "reselecting"){
-    html += indicatorHtml(sf.reselectMsg, true);
-  } else if (sf.stage === "reselect-refused"){
-    /* 🌙 拒绝后选项内联显示原选项，仅状态提示 */
-    html += indicatorHtml(sf.reselectMsg, false);
-  } else if (sf.stage === "reselect-done"){
-    html += indicatorHtml(sf.reselectMsg, false);
-  } else if (sf.stage === "comment-wait"){
-    html += indicatorHtml("对方正在输入评论…", true);
-  } else if (sf.stage === "comment"){
-    html += `<div class="qf-comment"><div class="qf-comment-label">对方评论</div><div class="qf-comment-text">${escapeHtml(sf.curAnswer.oppComment)}</div></div>
-      <textarea class="fld area" id="qfSelfComment" placeholder="写下你的评论…（可留空）"></textarea>
-      <button class="pill-btn" onclick="fillNextFromComment()">下一步</button>`;
   }
 
   document.getElementById("sfFullBody").innerHTML = html;
@@ -3294,18 +3291,17 @@ function renderFillStep(){
 
 function renderFillSummary(){
   const sf = surveyFill;
-  const oppNm = texts.opp_name||"温语";
   document.getElementById("sfFullTitle").innerText = sf.survey.title;
   document.getElementById("sfFullProgress").innerText = "完成";
   let html = `<div class="qf-summary">`;
   sf.answers.forEach(a=>{
     html += `<div class="qf-sum-item">
       <div class="qf-sum-q">${escapeHtml(a.q)}</div>
-      <div class="qf-sum-row">我　　　${escapeHtml(a.self)}</div>
-      <div class="qf-sum-row">${escapeHtml(oppNm)}　　　${escapeHtml(a.opp)}</div>`;
+      <div class="qf-sum-row">我　${escapeHtml(a.self)}</div>
+      <div class="qf-sum-row">彼　${escapeHtml(a.opp)}</div>`;
     if (a.oppComment !== undefined){
       html += `<div class="qf-sum-row">我的评论　${escapeHtml(a.selfComment || "（无）")}</div>
-        <div class="qf-sum-row">${escapeHtml(oppNm)}的评论　${escapeHtml(a.oppComment)}</div>`;
+        <div class="qf-sum-row">彼的评论　${escapeHtml(a.oppComment)}</div>`;
     }
     html += `</div>`;
   });
@@ -3936,7 +3932,6 @@ function renderCloudCardModal(groups) {
     <div class="ccl-actions">
       <button class="pill-btn" onclick="importSelectedCards()" id="cclImportBtn" disabled>导入选中</button>
       <button class="pill-btn" onclick="selectAllCloudCards()">全选</button>
-      <button class="pill-btn" onclick="closeModal();refreshCloudCards().then(()=>openCloudCardLibrary())">刷新</button>
       <button class="pill-btn" onclick="closeModal()">关闭</button>
     </div>
   `;
@@ -4205,7 +4200,6 @@ function renderCloudStickerModal(stks) {
     <div class="ccl-actions">
       <button class="pill-btn" onclick="importSelectedStickers()" id="cskImportBtn" disabled>导入选中</button>
       <button class="pill-btn" onclick="selectAllCloudStickers()">全选</button>
-      <button class="pill-btn" onclick="closeModal();refreshCloudStickers().then(()=>openCloudStickerLibrary())">刷新</button>
       <button class="pill-btn" onclick="closeModal()">关闭</button>
     </div>
   `;
