@@ -3720,6 +3720,32 @@
   padding-left: 4px;
   -webkit-tap-highlight-color: transparent;
 }
+/* 分页控件 */
+.sp-pager, .sticker-pager {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; justify-content: center;
+  gap: 14px; padding: 6px 0 2px;
+}
+.sp-pg-btn {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  color: var(--text-mute);
+  font-size: 11px; line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+  -webkit-tap-highlight-color: transparent;
+}
+.sp-pg-btn:not(:disabled):hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.sp-pg-btn:disabled { opacity: .25; cursor: default; }
+.sp-pg-num {
+  font-size: calc(var(--fs)*.72);
+  color: var(--text-mute);
+  letter-spacing: 2px;
+  min-width: 36px; text-align: center;
+}
 
 /* â”€â”€ èŠå¤©æ°”æ³¡ Â· è¡¨æƒ…åŒ…æ¶ˆæ¯ï¼ˆæ— æ°”æ³¡åŒ…è£¹ï¼‰â”€â”€ */
 .sticker-msg {

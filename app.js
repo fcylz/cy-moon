@@ -91,6 +91,8 @@ if ("serviceWorker" in navigator) {
 let ctxTargetIdx=-1, musicAudio=null, unreadCount=0, popupTimer=null;
 let imgPickKey="", memberPickIdx=-1, isBatchSelecting=false;
 let cardsActiveTab="cards", isStickerBatchSelecting=false, stickerSelected=[];
+let stickerPickerPage=0, stickerLibPage=0;
+const STICKER_PICKER_PAGE_SIZE=10, STICKER_LIB_PAGE_SIZE=20;
 let cloudSongCache=null, cloudCardCache=null, cloudStickerCache=null; // 云端数据内存缓存
 
 const TEXT_GROUPS = [
@@ -1778,7 +1780,7 @@ window.switchCardsTab = tab => {
   document.getElementById("cardsCloudSkBtn")?.classList.toggle("hidden", tab==="cards");
   const btn=document.querySelector(".batch-toggle-btn");
   if(btn) btn.style.opacity=(tab==="stickers"?isStickerBatchSelecting:isBatchSelecting)?"1":".5";
-  if(tab==="stickers") window.renderStickers();
+  if(tab==="stickers"){ stickerLibPage=0; window.renderStickers(); }
 };
 window.headerToggleBatch = ()=>{ if(cardsActiveTab==="stickers") window.toggleStickerBatchMode(); else window.toggleBatchMode(); };
 window.headerAdd = ()=>{ if(cardsActiveTab==="stickers") window.openAddSticker(); else window.openAddCard(); };
@@ -1788,7 +1790,11 @@ window.renderStickers = () => {
   const grid=document.getElementById("stickerGrid"); if(!grid) return;
   grid.innerHTML="";
   if(!stickers.length){ grid.innerHTML=`<div class="empty-tip" style="grid-column:1/-1;padding:40px;text-align:center;">表情包库此时空空如也</div>`; updateStickerBatch(); return; }
-  stickers.forEach(s=>{
+  const totalPages=Math.ceil(stickers.length/STICKER_LIB_PAGE_SIZE);
+  if(stickerLibPage>=totalPages) stickerLibPage=totalPages-1;
+  if(stickerLibPage<0) stickerLibPage=0;
+  const page=stickers.slice(stickerLibPage*STICKER_LIB_PAGE_SIZE,(stickerLibPage+1)*STICKER_LIB_PAGE_SIZE);
+  page.forEach(s=>{
     const it=document.createElement("div");
     it.className="sticker-item"+(s.shielded?" shielded":"");
     const chkHtml=isStickerBatchSelecting?`<input type="checkbox" class="chk" ${stickerSelected.includes(s.id)?"checked":""} onchange="event.stopPropagation();stickerSelToggle('${s.id}',this.checked)">`:"";
@@ -1802,8 +1808,16 @@ window.renderStickers = () => {
     }
     grid.appendChild(it);
   });
+  if(totalPages>1){
+    const pager=document.createElement("div");
+    pager.className="sticker-pager";
+    pager.innerHTML=`<button class="sp-pg-btn" onclick="stickerLibPrevPage()" ${stickerLibPage===0?'disabled':''}>◀</button><span class="sp-pg-num">${stickerLibPage+1}/${totalPages}</span><button class="sp-pg-btn" onclick="stickerLibNextPage()" ${stickerLibPage>=totalPages-1?'disabled':''}>▶</button>`;
+    grid.appendChild(pager);
+  }
   updateStickerBatch();
 };
+window.stickerLibPrevPage=()=>{if(stickerLibPage>0){stickerLibPage--;window.renderStickers();}};
+window.stickerLibNextPage=()=>{const tp=Math.ceil(stickers.length/STICKER_LIB_PAGE_SIZE);if(stickerLibPage<tp-1){stickerLibPage++;window.renderStickers();}};
 const STICKER_EYE_SVG=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
 const STICKER_EYE_OFF_SVG=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a18.5 18.5 0 0 1 4.22-5.06M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 const STICKER_X_SVG=`<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
@@ -1887,7 +1901,7 @@ window.toggleStickerPicker = () => {
   const p=document.getElementById("stickerPicker"); if(!p) return;
   const opening=!p.classList.contains("on");
   p.classList.toggle("on");
-  if(opening) renderStickerPickerGrid();
+  if(opening){ stickerPickerPage=0; renderStickerPickerGrid(); }
 };
 window.gotoStickerLibrary = () => {
   document.getElementById("stickerPicker")?.classList.remove("on");
@@ -1897,8 +1911,24 @@ window.gotoStickerLibrary = () => {
 function renderStickerPickerGrid(){
   const g=document.getElementById("spGrid"); if(!g) return;
   if(!stickers.length){ g.innerHTML=`<div class="sp-empty">还没有表情包<span onclick="gotoStickerLibrary()">去添加</span></div>`; return; }
-  g.innerHTML=stickers.map(s=>`<div class="sp-item" onclick="sendSticker('${s.id}')"><img src="${s.src}" loading="lazy"></div>`).join("");
+  const visible=stickers.filter(s=>!s.shielded);
+  if(!visible.length){ g.innerHTML=`<div class="sp-empty">没有可用的表情包</div>`; return; }
+  const totalPages=Math.ceil(visible.length/STICKER_PICKER_PAGE_SIZE);
+  if(stickerPickerPage>=totalPages) stickerPickerPage=totalPages-1;
+  if(stickerPickerPage<0) stickerPickerPage=0;
+  const page=visible.slice(stickerPickerPage*STICKER_PICKER_PAGE_SIZE,(stickerPickerPage+1)*STICKER_PICKER_PAGE_SIZE);
+  let html=page.map(s=>`<div class="sp-item" onclick="sendSticker('${s.id}')"><img src="${s.src}" loading="lazy"></div>`).join("");
+  if(totalPages>1){
+    html+=`<div class="sp-pager">
+      <button class="sp-pg-btn" onclick="event.stopPropagation();stickerPickerPrevPage()" ${stickerPickerPage===0?'disabled':''}>◀</button>
+      <span class="sp-pg-num">${stickerPickerPage+1}/${totalPages}</span>
+      <button class="sp-pg-btn" onclick="event.stopPropagation();stickerPickerNextPage()" ${stickerPickerPage>=totalPages-1?'disabled':''}>▶</button>
+    </div>`;
+  }
+  g.innerHTML=html;
 }
+window.stickerPickerPrevPage=()=>{if(stickerPickerPage>0){stickerPickerPage--;renderStickerPickerGrid();}};
+window.stickerPickerNextPage=()=>{const v=stickers.filter(s=>!s.shielded);const tp=Math.ceil(v.length/STICKER_PICKER_PAGE_SIZE);if(stickerPickerPage<tp-1){stickerPickerPage++;renderStickerPickerGrid();}};
 window.sendSticker = async id => {
   const s=stickers.find(x=>x.id===id); if(!s) return;
   const now=new Date();
@@ -1906,6 +1936,7 @@ window.sendSticker = async id => {
   window.clearPendingQuote();
   if(cfg.soundOn) playSoundById(cfg.activeSoundId || "__builtin_thud1__");
   if(navigator.vibrate) navigator.vibrate(18);
+  document.getElementById("stickerPicker")?.classList.remove("on");
   await saveAll(); appendNewChats();
 };
 
