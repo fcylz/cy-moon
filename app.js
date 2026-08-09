@@ -29,6 +29,11 @@ customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolar
     ttsPersist: false,
     sepPool: ["，","。","！","…","？","～"], sepNoneChance: 20,
     stickerOn: false,
+    painterOn: false,      // ⭕ 随机画作功能总开关，默认关闭
+    /* ⭕ 重要：必须直接指 /pages/index.html。根 /index.html 是 meta refresh 重定向，
+       重定向会丢掉 query string，导致 embed/auto/seed 全部失效。
+       远端源码确认：https://github.com/fcylz/cy-painter/blob/main/pages/index.html#L232 */
+    painterUrl: "https://fcylz.github.io/cy-painter/pages/index.html",  // ⭕ 画作远端地址
   },
   imgs: {
   selfAvatar: "", oppAvatar: "",
@@ -330,6 +335,7 @@ setSw("sw_showSelfRead",cfg.showSelfRead);
 setSw("sw_showSelfName", cfg.showSelfName);
 setSw("sw_groupMode",   cfg.groupMode);
 setSw("sw_stickerOn",   cfg.stickerOn);
+setSw("sw_painterOn",  cfg.painterOn); // ⭕ 画作开关同步
 setSw("sw_hideAesBg",  cfg.hideAesBg);
 setSw("sw_hidePolarBg",cfg.hidePolarBg);
 document.querySelectorAll(".aes-body").forEach(el => el.classList.toggle("hide-bg", !!cfg.hideAesBg));
@@ -934,6 +940,9 @@ function _buildMsgRow(m, idx, ctx){
   const transClass=openTrans.has(idx)?"show":"";
   const bodyHtml = m.sticker
     ? `<img class="sticker-msg" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy" onerror="this.src='${window.DEFAULTS.PH_SVG}'">`
+    /* ⭕ painter 画作消息：iframe 嵌入远端 cy-painter，透传 seed/auto=1/embed=1 */
+    : m.painter
+    ? `<div class="painter-frame-wrap"><iframe class="painter-frame" sandbox="allow-scripts allow-same-origin" src="${escapeHtml(cfg.painterUrl)}?seed=${escapeHtml(m.painterSeed||'0')}&auto=1&embed=1" loading="lazy"></iframe></div>`
     : `<div class="bubble message ${isSelf?"message-sent":"message-received"}" data-idx="${idx}">${escapeHtml(m.text).replace(/\n/g,"<br>")}</div>
       ${m.translation?`<div class="bubble-translation ${transClass}" id="trans-${idx}">${escapeHtml(m.translation)}</div>`:""}`;
   row.innerHTML=`
@@ -1526,6 +1535,21 @@ async function fireReply(){
       if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
       else { if(cfg.popupOn) showPopup("[表情包]",nameS,avatarS); }
       notify("[表情包]",nameS,avatarS);
+      return;
+    }
+  }
+  /* ⭕ painter画作分支：3%~10% 概率，优先级在表情包之后、字卡之前 */
+  if(cfg.painterOn){
+    const randVal = Math.random();
+    if(randVal >= 0.03 && randVal <= 0.10){
+      const painterSeed = Math.floor(Math.random() * 9999999).toString();
+      let nameP=texts.opp_name||"温语", avatarP=imgs.oppAvatar||"", memberIdP="";
+      if(cfg.groupMode&&groupMembers.length){ const mp=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameP=mp.name; avatarP=mp.avatar||window.DEFAULTS.PH_SVG; memberIdP=mp.id; }
+      _addChatMsg({sender:"opp",text:"[画作]",painter:true,painterSeed,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameP,memberId:memberIdP});
+      saveAllDebounced();
+      if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
+      else { if(cfg.popupOn) showPopup("[画作]",nameP,avatarP); }
+      notify("[画作]",nameP,avatarP);
       return;
     }
   }
