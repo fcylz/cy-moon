@@ -969,10 +969,10 @@ function _buildMsgRow(m, idx, ctx){
     /* ⭕ 图片消息：用户上传 / bot 随机发的独立图片消息类型（data:image/jpeg;base64,..） */
     : m.image
     ? `<img class="image-msg clickable-media" data-idx="${idx}" src="${escapeHtml(m.image)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.parentElement.classList.add('img-broken')">`
-    /* ⭕ painter 画作消息：iframe 嵌入远端 cy-painter，透传 seed/auto=1/embed=1 */
+    /* ⭕ painter 画作消息：iframe 嵌入远端 cy-painter，透传 seed/auto=1/embed=1/mode=chat */
     : m.painter
     /* ⭕ click 透传 seed → 弹窗复用同一个 iframe（同源 URL，无需额外请求/存储） */
-    ? `<div class="painter-frame-wrap" data-painter-seed="${escapeHtml(m.painterSeed||'0')}" onclick="window._openPainterModal(this.dataset.painterSeed)"><iframe class="painter-frame" sandbox="allow-scripts allow-same-origin" src="${escapeHtml(cfg.painterUrl)}?seed=${escapeHtml(m.painterSeed||'0')}&auto=1&embed=1" loading="lazy"></iframe></div>`
+    ? `<div class="painter-frame-wrap" data-painter-seed="${escapeHtml(m.painterSeed||'0')}" onclick="window._openPainterModal(this.dataset.painterSeed)"><iframe class="painter-frame" sandbox="allow-scripts allow-same-origin" src="${escapeHtml(cfg.painterUrl)}?seed=${escapeHtml(m.painterSeed||'0')}&auto=1&embed=1&mode=chat" loading="lazy"></iframe></div>`
     : `<div class="bubble message ${isSelf?"message-sent":"message-received"}" data-idx="${idx}">${escapeHtml(m.text).replace(/\n/g,"<br>")}</div>
       ${m.translation?`<div class="bubble-translation ${transClass}" id="trans-${idx}">${escapeHtml(m.translation)}</div>`:""}`;
   row.innerHTML=`
@@ -1747,7 +1747,7 @@ window._openPainterModal = function(seed){
   const modal=document.getElementById("painterModal");
   const card=document.getElementById("painterModalCard");
   if(!modal||!card) return;
-  const url=escapeHtml(cfg.painterUrl||"")+"?seed="+encodeURIComponent(seed||"0")+"&auto=1&embed=1";
+  const url=escapeHtml(cfg.painterUrl||"")+"?seed="+encodeURIComponent(seed||"0")+"&auto=1";
   card.innerHTML=`<iframe sandbox="allow-scripts allow-same-origin" src="${url}" loading="eager"></iframe>`;
   card.classList.remove("img");
   modal.classList.add("on");

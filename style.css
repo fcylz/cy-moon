@@ -4148,23 +4148,22 @@
 }
 .csk-check input { width:13px; height:13px; accent-color:var(--accent,#b04c60); margin:0; }
 
-/* ⭕ Painter 随机画作 iframe 容器：完整显示画作卡片，等比缩小 */
+/* ⭕ Painter 随机画作 iframe 容器：小图标，点击放大查看完整内容 */
 .painter-frame-wrap {
   width: 150px;
-  height: 180px;        /* ⭕ 显示区域尺寸 */
+  height: 180px;
   border-radius: 12px;
   overflow: hidden;
   position: relative;
-  background: #fff;     /* ⭕ 卡片背景，避免 iframe 加载前/后颜色闪烁 */
+  background: #fff;
   box-shadow: 0 2px 8px rgba(0,0,0,0.13);
 }
 .painter-frame {
-  /* iframe 以原页面尺寸 360×432 渲染，通过 scale(0.417) 缩到 150×180，
-     使整个页面（画作 + 标题 + 标签 + 解读）都能完整等比显示 */
+  /* iframe 360×432，scale 0.417 缩为 150×180 正好等比填满 */
   width: 360px;
   height: 432px;
   border: none;
-  pointer-events: none; /* ⭕ 让点击穿透到父级 .painter-frame-wrap 的 onclick */
+  pointer-events: none; /* ⭕ 气泡内禁止 iframe 交互，点击交给外层 onclick 弹窗 */
   position: absolute;
   top: 0;
   left: 0;
@@ -4195,7 +4194,7 @@
 }
 .painter-modal-close:hover { background: #fff; }
 .painter-modal-card {
-  width: min(560px, 92vw); height: min(560px, 80vh);
+  width: min(480px, 92vw); height: min(680px, 85vh);
   background: #fff; border-radius: 16px; overflow: hidden;
   box-shadow: 0 12px 48px rgba(0,0,0,0.4);
   position: relative;
