@@ -465,6 +465,9 @@
       <button class="in-btn sticker" onclick="toggleStickerPicker()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="8.6" cy="9.6" r=".9" fill="currentColor" stroke="none"/><circle cx="15.4" cy="9.6" r=".9" fill="currentColor" stroke="none"/><path d="M7.5 14.2c1 1.8 2.8 2.8 4.5 2.8s3.5-1 4.5-2.8"/></svg>
       </button>
+      <button class="in-btn img" onclick="triggerImageSend()" title="发送图片">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10.5" r="1.5"/><path d="M3 17l5-5 4 4 3-3 6 6"/></svg>
+      </button>
       <button class="in-btn send" onclick="sendMsg()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2" fill="currentColor"/></svg>
       </button>
@@ -800,6 +803,21 @@
           </div>
         </div>
 
+        <!-- 头像大小 -->
+        <div class="sblock">
+          <div class="sblock-label">头像大小</div>
+          <div class="ssize-grid">
+            <div class="ssize-item">
+              <span class="ssize-label">聊天</span>
+              <div class="av-size-tabs">
+                <button class="av-size-tab active" data-v="s" onclick="setAvSize('s')">小</button>
+                <button class="av-size-tab" data-v="m" onclick="setAvSize('m')">中</button>
+                <button class="av-size-tab" data-v="l" onclick="setAvSize('l')">大</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 显示 -->
         <div class="sblock">
           <div class="sblock-label">显示</div>
@@ -902,6 +920,7 @@
               <div class="sw" id="sw_stickerOn" onclick="cfgToggle('stickerOn')"><div class="sw-indicator"></div></div>
             </div>
           </div>
+
           <div class="snav-list" style="margin-top:8px;">
             <div class="snav-item" onclick="openApp('cardsApp');switchCardsTab('stickers')">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="8.6" cy="9.6" r=".9" fill="currentColor" stroke="none"/><circle cx="15.4" cy="9.6" r=".9" fill="currentColor" stroke="none"/><path d="M7.5 14.2c1 1.8 2.8 2.8 4.5 2.8s3.5-1 4.5-2.8"/></svg>
@@ -1325,6 +1344,12 @@
   </div>
 
   <!-- ══ Popup ══ -->
+  <!-- ⭕ 画作/图片 点击放大弹窗 -->
+  <div class="painter-modal" id="painterModal" onclick="if(event.target===this||event.target.classList.contains('painter-modal-close'))window._closeMediaModal()">
+    <button class="painter-modal-close" aria-label="关闭">×</button>
+    <div class="painter-modal-card" id="painterModalCard"></div>
+  </div>
+
   <div class="msg-popup" id="msgPopup">
     <img class="pav ph" id="popAv" src="">
     <div class="pinfo">

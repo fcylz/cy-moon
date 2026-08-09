@@ -30,10 +30,8 @@ customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolar
     sepPool: ["，","。","！","…","？","～"], sepNoneChance: 20,
     stickerOn: false,
     painterOn: false,      // ⭕ 随机画作功能总开关，默认关闭
-    /* ⭕ 重要：必须直接指 /pages/index.html。根 /index.html 是 meta refresh 重定向，
-       重定向会丢掉 query string，导致 embed/auto/seed 全部失效。
-       远端源码确认：https://github.com/fcylz/cy-painter/blob/main/pages/index.html#L232 */
-    painterUrl: "https://fcylz.github.io/cy-painter/pages/index.html",  // ⭕ 画作远端地址
+    painterUrl: "https://fcylz.github.io/cy-painter/pages/index.html",  // ⭕ 直接指真实页面，不经过根目录跳转
+    avSize: "s",         // 聊天头像大小：s=小 32px, m=中 40px, l=大 48px
   },
   imgs: {
   selfAvatar: "", oppAvatar: "",
@@ -349,6 +347,9 @@ document.querySelectorAll(".tab-switch .ts-opt[data-v]").forEach(el =>
 document.querySelectorAll(".tab-switch .ts-opt[data-theme]").forEach(el =>
   el.classList.toggle("active", el.dataset.theme === cfg.theme)
 );
+document.querySelectorAll(".av-size-tab").forEach(el =>
+  el.classList.toggle("active", el.dataset.v === (cfg.avSize||"s"))
+);
 document.querySelectorAll(".slayout-opt[data-v]").forEach(el =>
   el.classList.toggle("active", +el.dataset.v === cfg.layout)
 );
@@ -377,7 +378,7 @@ document.querySelectorAll(".stheme-opt[data-theme]").forEach(el =>
   if(muEl) muEl.value = cfg.musicUrl || "";
   // sync active sound display
   if(document.getElementById("modalSndList")) renderModalSoundList();
-  applyTheme(); applyFontSize(); applyCustomFont();
+  applyTheme(); applyFontSize(); applyCustomFont(); applyAvSize();
   applyCustomBubble(); applyChatBg();applyCustomHomeStyles();applyHomeBg(); applyCustomChatCss(); applyAesBodyBg();
   const mmKeyEl = document.getElementById("cfg_minimaxKey");
   if(mmKeyEl) mmKeyEl.value = cfg.minimaxKey || "";
@@ -391,6 +392,12 @@ function setSw(id,v){ const el=document.getElementById(id); if(!el)return; v?el.
 function applyTheme(){
   const isDark=cfg.theme==="dark"||(cfg.theme==="system"&&matchMedia("(prefers-color-scheme:dark)").matches);
   document.documentElement.setAttribute("data-theme",isDark?"dark":"light");
+}
+function applyAvSize(){
+  const m={s:{av:32,col:40},m:{av:40,col:48},l:{av:48,col:56}};
+  const v=m[cfg.avSize]||m.s;
+  document.documentElement.style.setProperty("--av-size",v.av+"px");
+  document.documentElement.style.setProperty("--av-col-w",v.col+"px");
 }
 function applyFontSize(){
   document.documentElement.style.setProperty("--fs",cfg.fontSize+"px");
@@ -469,6 +476,10 @@ window.setLayout = async(v)=>{ cfg.layout=+v; await saveAll(); syncUI(); documen
 window.setTheme  = async(v)=>{ cfg.theme=v; await saveAll(); syncUI(); document.querySelectorAll(".tab-switch .ts-opt[data-theme]").forEach(el=>el.classList.toggle("active",el.dataset.theme===cfg.theme)); };
 window.setUiFontSize  = async(v)=>{ cfg.fontSize=+v; await saveAll(); syncUI(); };
 window.setChatFontSize= async(v)=>{ cfg.chatFontSize=+v; await saveAll(); syncUI(); };
+window.setAvSize = async(v)=>{
+  cfg.avSize=v; await saveAll(); syncUI();
+  document.querySelectorAll(".av-size-tab").forEach(el=>el.classList.toggle("active", el.dataset.v===v));
+};
 window.setChatStyle = async v => {
   cfg.chatStyle = +v;
   await saveAll();
@@ -584,6 +595,19 @@ function _compressStickerImage(file) {
 
 async function onPickImg(e){
   const f=e.target.files[0]; if(!f) return;
+  /* ⭕ 用户发送图片消息：只做一次强压缩（显示小图 + 减轻存储），跳过 1200px 压缩 */
+  if(imgPickKey==="__chat_image_send__"){
+    imgPickKey="";
+    const r = await _compressImg(f, 400, 0.65);
+    if(!r) return;
+    const now=new Date();
+    _addChatMsg({sender:"self",text:"[图片]",image:r.data,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime()});
+    saveAllDebounced(); appendNewChats();
+    const cf=document.getElementById("chatFlow"); if(cf) cf.scrollTop=cf.scrollHeight;
+    if(cfg.soundOn) playSoundById(cfg.activeSoundId||"__builtin_thud1__");
+    if(navigator.vibrate) navigator.vibrate(18);
+    return;
+  }
   const result = await _compressImg(f, 1200, 0.75);
   if(!result) return;
   const data = result.data;
@@ -593,6 +617,8 @@ async function onPickImg(e){
     carousel.push({id:"car"+Date.now(),data}); await saveAll(); renderCarousel(); renderCarouselManage(); return;
   }
   if(imgPickKey==="__mosaic_new__"){ if(!imgs.mosaic) imgs.mosaic=[]; if(imgs.mosaic.length<4) imgs.mosaic.push(data); await saveAll(); renderMosaic(); return; }
+  /* ⭕ 用户发送图片消息：不污染 imgs 池（已在函数入口提前处理，此处为防御） */
+  if(imgPickKey==="__chat_image_send__"){ return; }
   if(imgPickKey.startsWith("__mosaic_")){ const idx=parseInt(imgPickKey.split("_")[2]); if(imgs.mosaic?.[idx]!==undefined){ imgs.mosaic[idx]=data; await saveAll(); renderMosaic(); } return; }
   imgs[imgPickKey]=data; await saveAll();
   if(imgPickKey==="aes_body_bg") { applyAesBodyBg(); toast("已更新"); return; }
@@ -939,10 +965,14 @@ function _buildMsgRow(m, idx, ctx){
   const quoteHtml=m.quote?`<div class="quote-line" data-jump="${escapeHtml(m.quote)}"><div class="qarm"></div><div class="qtxt">${escapeHtml(m.quote)}</div></div>`:"";
   const transClass=openTrans.has(idx)?"show":"";
   const bodyHtml = m.sticker
-    ? `<img class="sticker-msg" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy" onerror="this.src='${window.DEFAULTS.PH_SVG}'">`
+    ? `<img class="sticker-msg clickable-media" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.src='${window.DEFAULTS.PH_SVG}'">`
+    /* ⭕ 图片消息：用户上传 / bot 随机发的独立图片消息类型（data:image/jpeg;base64,..） */
+    : m.image
+    ? `<img class="image-msg clickable-media" data-idx="${idx}" src="${escapeHtml(m.image)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.parentElement.classList.add('img-broken')">`
     /* ⭕ painter 画作消息：iframe 嵌入远端 cy-painter，透传 seed/auto=1/embed=1 */
     : m.painter
-    ? `<div class="painter-frame-wrap"><iframe class="painter-frame" sandbox="allow-scripts allow-same-origin" src="${escapeHtml(cfg.painterUrl)}?seed=${escapeHtml(m.painterSeed||'0')}&auto=1&embed=1" loading="lazy"></iframe></div>`
+    /* ⭕ click 透传 seed → 弹窗复用同一个 iframe（同源 URL，无需额外请求/存储） */
+    ? `<div class="painter-frame-wrap" data-painter-seed="${escapeHtml(m.painterSeed||'0')}" onclick="window._openPainterModal(this.dataset.painterSeed)"><iframe class="painter-frame" sandbox="allow-scripts allow-same-origin" src="${escapeHtml(cfg.painterUrl)}?seed=${escapeHtml(m.painterSeed||'0')}&auto=1&embed=1" loading="lazy"></iframe></div>`
     : `<div class="bubble message ${isSelf?"message-sent":"message-received"}" data-idx="${idx}">${escapeHtml(m.text).replace(/\n/g,"<br>")}</div>
       ${m.translation?`<div class="bubble-translation ${transClass}" id="trans-${idx}">${escapeHtml(m.translation)}</div>`:""}`;
   row.innerHTML=`
@@ -1703,6 +1733,42 @@ function showPopup(text,name,avatar){
   popupTimer=setTimeout(hidePopup,6000);
 }
 function hidePopup(){ document.getElementById("msgPopup").classList.remove("on"); document.getElementById("msgPopup").style.transform=""; if(popupTimer){clearTimeout(popupTimer);popupTimer=null;} }
+
+/* ⭕ 用户发送图片：复用 fpImg 选择器 + _compressImg 压缩，发送图片消息 */
+window.triggerImageSend = ()=>{
+  const i=document.getElementById("fpImg"); if(!i) return;
+  i.value="";
+  imgPickKey="__chat_image_send__";
+  i.click();
+};
+
+/* ⭕ 统一放大弹窗：支持 painter 画作（iframe）和表情包/图片（img） */
+window._openPainterModal = function(seed){
+  const modal=document.getElementById("painterModal");
+  const card=document.getElementById("painterModalCard");
+  if(!modal||!card) return;
+  const url=escapeHtml(cfg.painterUrl||"")+"?seed="+encodeURIComponent(seed||"0")+"&auto=1&embed=1";
+  card.innerHTML=`<iframe sandbox="allow-scripts allow-same-origin" src="${url}" loading="eager"></iframe>`;
+  card.classList.remove("img");
+  modal.classList.add("on");
+};
+window._openImageModal = function(src){
+  const modal=document.getElementById("painterModal");
+  const card=document.getElementById("painterModalCard");
+  if(!modal||!card) return;
+  card.innerHTML=`<img class="media-full" src="${escapeHtml(src)}" alt="">`;
+  card.classList.add("img");
+  modal.classList.add("on");
+};
+window._closeMediaModal = function(){
+  const modal=document.getElementById("painterModal");
+  if(!modal) return;
+  modal.classList.remove("on");
+  const card=document.getElementById("painterModalCard");
+  if(card){ card.innerHTML=""; card.classList.remove("img"); }
+};
+/* ESC 键也能关闭弹窗 */
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") window._closeMediaModal(); });
 
 // ─── Search ───
 window.toggleSearch = ()=>{ const sp=document.getElementById("searchPane"); sp.classList.toggle("on"); if(sp.classList.contains("on")){document.getElementById("chatSearch").focus();doSearchChat();} };

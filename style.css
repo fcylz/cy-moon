@@ -926,9 +926,9 @@
   /* ⭐ 原始代码有 animation:rowIn .45s 每条消息都有入场动画，大量消息时增加 compositor 负担，已移除 */
   .row.self { flex-direction:row-reverse; }
   @keyframes rowIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
-  .av-col { display:flex; flex-direction:column; align-items:center; gap:5px; flex-shrink:0; width:40px; justify-content:flex-end; padding-bottom:2px; }
-  .av-col .av { width:32px; height:32px; border-radius:50%; background:var(--ph-bg); object-fit:cover; flex-shrink:0; }
-  .av-meta { font-size:9px; color:var(--text-mute); letter-spacing:.5px; text-align:center; line-height:1.4; display:none; max-width:44px; word-break:keep-all; }
+  .av-col { display:flex; flex-direction:column; align-items:center; gap:5px; flex-shrink:0; width:var(--av-col-w,40px); justify-content:flex-end; padding-bottom:2px; }
+  .av-col .av { width:var(--av-size,32px); height:var(--av-size,32px); border-radius:50%; background:var(--ph-bg); object-fit:cover; flex-shrink:0; }
+  .av-meta { font-size:9px; color:var(--text-mute); letter-spacing:.5px; text-align:center; line-height:1.4; display:none; max-width:calc(var(--av-col-w,40px) + 4px); word-break:keep-all; }
   .stack { display:flex; flex-direction:column; gap:3px; max-width:82%; }
   .row.self .stack { align-items:flex-end; }
   .name-tag { font-size:calc(var(--fs)*.68); color:var(--text-mute); padding:0 4px 1px; letter-spacing:1px; line-height:1.2; min-height:0; }
@@ -3775,6 +3775,21 @@
 .row.self .stack { align-items: flex-end; }
 .row.opp  .stack { align-items: flex-start; }
 
+/* ⭕ 图片消息：缩略显示（类似表情包），最大 120x160，点击放大查看原图 */
+.image-msg {
+  display: block;
+  max-width: 120px; max-height: 160px;
+  width: auto; height: auto;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--ph-bg);
+  cursor: zoom-in;
+  transition: transform .15s var(--ease);
+}
+.image-msg:active { transform: scale(.96); }
+.row.self .image-msg { align-self: flex-end; }
+.row.opp  .image-msg { align-self: flex-start; }
+
 /* â”€â”€ è¾“å…¥æ è¡¨æƒ…æŒ‰é’®ï¼ˆç»Ÿä¸€å„ styleï¼‰â”€â”€ */
 .in-btn.sticker { opacity: .65; transition: opacity .2s, color .2s; }
 .in-btn.sticker:active { opacity: 1; color: var(--accent); }
@@ -4133,18 +4148,90 @@
 }
 .csk-check input { width:13px; height:13px; accent-color:var(--accent,#b04c60); margin:0; }
 
-/* ⭕ Painter 随机画作 iframe 容器 */
+/* ⭕ Painter 随机画作 iframe 容器：完整显示画作卡片，等比缩小 */
 .painter-frame-wrap {
-  width: 240px;
-  height: 240px;
+  width: 150px;
+  height: 180px;        /* ⭕ 显示区域尺寸 */
   border-radius: 12px;
   overflow: hidden;
+  position: relative;
+  background: #fff;     /* ⭕ 卡片背景，避免 iframe 加载前/后颜色闪烁 */
   box-shadow: 0 2px 8px rgba(0,0,0,0.13);
 }
 .painter-frame {
-  width: 100%;
-  height: 100%;
+  /* iframe 以原页面尺寸 360×432 渲染，通过 scale(0.417) 缩到 150×180，
+     使整个页面（画作 + 标题 + 标签 + 解读）都能完整等比显示 */
+  width: 360px;
+  height: 432px;
   border: none;
+  pointer-events: none; /* ⭕ 让点击穿透到父级 .painter-frame-wrap 的 onclick */
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: scale(0.417);
+  transform-origin: top left;
   /* 视口外自动休眠iframe，缓解大量消息内存泄漏 */
   content-visibility: auto;
+}
+/* ⭕ 点击提示：放大镜光标 + 悬停抬升 */
+.painter-frame-wrap { cursor: zoom-in; transition: transform .15s ease, box-shadow .15s ease; }
+.painter-frame-wrap:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,0.2); }
+
+/* ⭕ Painter 弹窗：全屏遮罩 + 居中卡片，复用同一个 iframe（同源 seed） */
+.painter-modal {
+  position: fixed; inset: 0; z-index: 10000;
+  background: rgba(0,0,0,0.55); backdrop-filter: blur(6px);
+  display: none; align-items: center; justify-content: center;
+  padding: 24px; box-sizing: border-box;
+}
+.painter-modal.on { display: flex; }
+.painter-modal-close {
+  position: absolute; top: 16px; right: 20px;
+  width: 36px; height: 36px; border: none; border-radius: 50%;
+  background: rgba(255,255,255,0.92); color: #333; font-size: 24px;
+  cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+  display: flex; align-items: center; justify-content: center;
+  line-height: 1; padding: 0;
+}
+.painter-modal-close:hover { background: #fff; }
+.painter-modal-card {
+  width: min(560px, 92vw); height: min(560px, 80vh);
+  background: #fff; border-radius: 16px; overflow: hidden;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.4);
+  position: relative;
+}
+.painter-modal-card iframe {
+  width: 100%; height: 100%; border: none; display: block;
+}
+/* ⭕ 表情包/图片弹窗：fit-content 自然尺寸，不留白 */
+.painter-modal-card.img {
+  width: fit-content; height: fit-content;
+  max-width: 90vw; max-height: 85vh;
+  background: transparent; box-shadow: none; border-radius: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  overflow: visible;
+}
+.painter-modal-card.img .media-full {
+  display: block;
+  max-width: 90vw; max-height: 85vh;
+  width: auto; height: auto;
+  object-fit: contain; border-radius: 12px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.45);
+}
+/* ⭕ 可点击放大的常规缩略媒体 */
+.clickable-media { cursor: zoom-in; }
+
+/* ⭕ 头像大小选择器：S/M/L 三档 tab */
+.av-size-tabs {
+  display: flex; gap: 4px; background: var(--bg-soft, #f0f0f0);
+  border-radius: 8px; padding: 3px;
+}
+.av-size-tab {
+  flex: 1; text-align: center; padding: 6px 12px; border-radius: 6px;
+  border: none; background: transparent; color: var(--text-mute,#999);
+  font-size: 12px; cursor: pointer; transition: .15s;
+}
+.av-size-tab.active {
+  background: #fff; color: var(--text,#333);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-weight: 600;
 }
