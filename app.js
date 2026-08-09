@@ -7,7 +7,7 @@ window.DEFAULTS = {
     delayMin:2, delayMax:5, typingText:"", ignoreOn:false, quoteOn:true,
     sentenceJoin:true, activeSend:false, activeMin:5, activeMax:20, nextActiveAt:0,
     replyProb:60, // 用户发消息后彼自动回复的概率（0-100），默认60%
-    popupOn:true, notifOn:false, soundOn:true, showAvatar:true, showName:true,
+    popupOn:true, notifOn:false, soundOn:true, sfxVolume:0.8, showAvatar:true, showName:true,
     showTime:true, showRead:true, showSelfRead:false, showSelfName:false,readText:"",
     customFont:"", customFontCss:"", customBubble:"", customChatCss:"",
     groupMode:false, chatStyle:1, inputPlaceholder:"", welcomeTitle:"",
@@ -318,6 +318,8 @@ setSw("sw_activeSend",  cfg.activeSend);
 setSw("sw_popupOn",     cfg.popupOn);
 setSw("sw_notifOn",     cfg.notifOn);
 setSw("sw_soundOn",     cfg.soundOn);
+  const _sfxVol = document.getElementById("cfg_sfxVolume"); if(_sfxVol) _sfxVol.value = Math.round((cfg.sfxVolume||0.8)*100);
+  const _sfxVal = document.getElementById("sfxVolVal"); if(_sfxVal) _sfxVal.innerText = Math.round((cfg.sfxVolume||0.8)*100)+"%";
 setSw("sw_showAvatar",  cfg.showAvatar);
 setSw("sw_showName",    cfg.showName);
 setSw("sw_showTime",    cfg.showTime);
@@ -456,7 +458,7 @@ function applyAesBodyBg() {
 
 // ─── Config setters ───
 window.cfgSet    = async(k,v)=>{ cfg[k]=v; await saveAll(); syncUI(); };
-window.cfgToggle = async(k)=>{ cfg[k]=!cfg[k]; await saveAll(); syncUI(); if(k==="activeSend") scheduleActive(); if(document.getElementById("chatFlow")) renderChats(); };
+window.cfgToggle = async(k)=>{ cfg[k]=!cfg[k]; await saveAll(); syncUI(); if(k==="activeSend") scheduleActive(); if(document.getElementById("chatFlow")){ /* 仅聊天显示相关配置才需重建 DOM，避免非相关开关触犯全部重绘 */ const chatKeys=["showAvatar","showName","showSelfName","showTime","timeShowSeconds","oppCustomTime","showRead","showSelfRead","readText"]; if(chatKeys.includes(k)) renderChats(); } };
 window.setLayout = async(v)=>{ cfg.layout=+v; await saveAll(); syncUI(); document.querySelectorAll(".tab-switch .ts-opt[data-v]").forEach(el=>el.classList.toggle("active",+el.dataset.v===cfg.layout)); };
 window.setTheme  = async(v)=>{ cfg.theme=v; await saveAll(); syncUI(); document.querySelectorAll(".tab-switch .ts-opt[data-theme]").forEach(el=>el.classList.toggle("active",el.dataset.theme===cfg.theme)); };
 window.setUiFontSize  = async(v)=>{ cfg.fontSize=+v; await saveAll(); syncUI(); };
@@ -498,7 +500,7 @@ function bindEditables(){
     modal("编辑",`<textarea class="fld area" id="m_text">${escapeHtml(cur)}</textarea><button class="pill-btn" onclick="saveText('${k}',${isCfg})">保存</button>`);
   });
 }
-window.saveText = async(k,isCfg)=>{ const v=document.getElementById("m_text").value; if(isCfg) cfg[k]=v; else texts[k]=v; await saveAll(); syncUI(); closeModal(); };
+window.saveText = async(k,isCfg)=>{ const v=document.getElementById("m_text").value; if(isCfg) cfg[k]=v; else texts[k]=v; await saveAll(); syncUI(); closeModal(); if(k==="readText"&&document.getElementById("chatFlow")) renderChats(); };
 
 // ─── Image interactions ───
 function bindImageInteractions(){
@@ -616,9 +618,9 @@ function onPickSnd(e){
 // ─── Sound ───
 function makeDullThud1() {
   try {
-    const c = new (window.AudioContext || window.webkitAudioContext)();
+    const c = getAudioCtx(); /* ⭐ 复用全局 AudioContext，避免每次新建未 resume 的实例导致无声 */
     const o = c.createOscillator(), g = c.createGain();
-    o.connect(g); g.connect(c.destination);
+    o.connect(g); g.connect(getSfxGain());
     o.type = "sine"; o.frequency.setValueAtTime(120, c.currentTime);
     o.frequency.exponentialRampToValueAtTime(60, c.currentTime + 0.12);
     g.gain.setValueAtTime(0.18, c.currentTime);
@@ -628,7 +630,7 @@ function makeDullThud1() {
 }
 function makeDullThud2() {
   try {
-    const c = new (window.AudioContext || window.webkitAudioContext)();
+    const c = getAudioCtx(); /* ⭐ 同上 */
     const buf = c.createBuffer(1, c.sampleRate * 0.18, c.sampleRate);
     const d = buf.getChannelData(0);
     for (let i = 0; i < d.length; i++) {
@@ -636,7 +638,7 @@ function makeDullThud2() {
     }
     const src = c.createBufferSource(), g = c.createGain();
     const flt = c.createBiquadFilter(); flt.type = "lowpass"; flt.frequency.value = 200;
-    src.buffer = buf; src.connect(flt); flt.connect(g); g.connect(c.destination);
+    src.buffer = buf; src.connect(flt); flt.connect(g); g.connect(getSfxGain());
     g.gain.setValueAtTime(1, c.currentTime);
     src.start();
   } catch {}
@@ -676,7 +678,7 @@ function renderSoundList(){
     playBtn.onclick = () => {
       if(s.id==="__builtin_thud1__") makeDullThud1();
       else if(s.id==="__builtin_thud2__") makeDullThud2();
-      else new Audio(s.data).play().catch(()=>{});
+      else { const a=new Audio(s.data); a.volume=cfg.sfxVolume!==undefined?cfg.sfxVolume:0.8; a.onended=()=>{if(_playingUserAudio===a)_playingUserAudio=null;}; _playingUserAudio=a; a.play().catch(()=>{}); }
     };
     ops.appendChild(playBtn);
     if(!isBuiltin){
@@ -688,14 +690,28 @@ function renderSoundList(){
     c.appendChild(li);
   });
 }
+let _playingUserAudio = null; /* 正在播放的用户上传音效 Audio 元素，用于音量同步 */
 function playSoundById(id) {
   if (id === "__builtin_thud1__") { makeDullThud1(); return; }
   if (id === "__builtin_thud2__") { makeDullThud2(); return; }
   const s = sounds.find(x => x.id === id);
-  if (s) new Audio(s.data).play().catch(() => {});
+  if (s) {
+    const a = new Audio(s.data);
+    a.volume = cfg.sfxVolume !== undefined ? cfg.sfxVolume : 0.8;
+    a.onended = ()=>{ if(_playingUserAudio===a) _playingUserAudio=null; };
+    _playingUserAudio = a;
+    a.play().catch(() => {});
+  }
   else makeDullThud1();
 }
-window.playSnd = i=>{ if(sounds[i]) new Audio(sounds[i].data).play().catch(()=>{}); };
+window.playSnd = i=>{
+  if(!sounds[i]) return;
+  const a = new Audio(sounds[i].data);
+  a.volume = cfg.sfxVolume !== undefined ? cfg.sfxVolume : 0.8;
+  a.onended = ()=>{ if(_playingUserAudio===a) _playingUserAudio=null; };
+  _playingUserAudio = a;
+  a.play().catch(()=>{});
+};
 window.delSnd  = async i=>{ sounds.splice(i,1); await saveAll(); renderSoundList(); };
 function chime(){ playSoundById(cfg.activeSoundId || "__builtin_thud1__"); }
 window.testSound = ()=>{ playSoundById(cfg.activeSoundId || "__builtin_thud1__"); };
@@ -940,17 +956,33 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
 
 // Full rebuild — used whenever messages were reordered/edited/removed/imported,
 // or display settings that affect every row (avatar/time/name visibility) changed.
+let _chatRenderInProgress=false;
 function renderChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
+  _chatRenderInProgress=true;
   const ctx=buildChatCtx();
-  const frag=document.createDocumentFragment();
-  const lastDateRef={v:""};
-  chats.forEach((m,idx)=>buildMsgInto(frag,m,idx,ctx,lastDateRef));
   f.innerHTML="";
-  f.appendChild(frag);
-  f.scrollTop=f.scrollHeight;
-  renderedMsgCount=chats.length; renderedLastDate=lastDateRef.v;
-  unreadCount=0; updateScrollBot();
+  const CHUNK=20;
+  let cursor=0, lastDateRef={v:""};
+  (function renderChunk(){
+    const frag=document.createDocumentFragment();
+    const end=Math.min(cursor+CHUNK, chats.length);
+    for(let i=cursor;i<end;i++) buildMsgInto(frag,chats[i],i,ctx,lastDateRef);
+    f.appendChild(frag);
+    cursor=end;
+    if(cursor<chats.length){ requestAnimationFrame(renderChunk); return; }
+    _chatRenderInProgress=false;
+    f.scrollTop=f.scrollHeight;
+    renderedMsgCount=chats.length; renderedLastDate=lastDateRef.v;
+    unreadCount=0; updateScrollBot();
+    /* openApp 可能在 renderChats 期间尝试插入 typing 节点——在这里补做 */
+    _flushPendingChatOps(f);
+  })();
+}
+let _pendingChatOps=null;
+function _flushPendingChatOps(f){
+  if(!_pendingChatOps) return;
+  _pendingChatOps(f); _pendingChatOps=null;
 }
 
 // Incremental append — used on ordinary new-message events (send / reply / sticker).
@@ -959,6 +991,8 @@ function renderChats(){
 // doesn't visibly jerk on every message the way a full rebuild does.
 function appendNewChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
+  /* 分帧渲染进行中——新消息已在 chats 中，当前 render 会自动拾取 */
+  if(_chatRenderInProgress) return;
   if(renderedMsgCount===0||renderedMsgCount>chats.length){ renderChats(); return; }
   if(renderedMsgCount===chats.length) return;
   const wasNear = f.scrollHeight-f.scrollTop-f.clientHeight<80;
@@ -1055,7 +1089,34 @@ function bindGlobalClose(){
   });
   document.getElementById("ctxDel").addEventListener("click",async e=>{
     e.stopPropagation(); if(ctxTargetIdx<0) return;
-    const idx=ctxTargetIdx; hideCtxMenu(); chats.splice(idx,1); markStatsDirty(); openTrans=new Set(); await saveAll(); renderChats();
+    const idx=ctxTargetIdx; hideCtxMenu(); chats.splice(idx,1); markStatsDirty(); openTrans=new Set();
+    /* 直接从 DOM 移除该行，避免全量重建 */
+    const row=document.getElementById(`msg-row-${idx}`);
+    if(row){
+      /* 检查是否需要移除上方孤立的日期分隔符 */
+      const prev=row.previousElementSibling;
+      if(prev&&prev.classList.contains("dt-div")){
+        const next=row.nextElementSibling;
+        if(!next||next.classList.contains("dt-div")) prev.remove();
+      }
+      row.remove();
+      /* 更新后续行的 id / data-idx */
+      const f=document.getElementById("chatFlow"); if(f){
+        for(let i=idx+1;i<=renderedMsgCount;i++){
+          const r=document.getElementById(`msg-row-${i}`);
+          if(!r) continue;
+          r.id=`msg-row-${i-1}`;
+          const b=r.querySelector(".bubble, .sticker-msg");
+          if(b) b.setAttribute("data-idx",i-1);
+          const t=r.querySelector(".bubble-translation");
+          if(t) t.id=`trans-${i-1}`;
+        }
+      }
+      renderedMsgCount--;
+      /* 若删除的是最后一条消息，更新 renderedLastDate */
+      if(idx>=renderedMsgCount) renderedLastDate=chats.length?chats[chats.length-1].date||"":"";
+    }
+    await saveAll();
   });
   document.getElementById("ctxAddCard").addEventListener("click", e => {
     e.stopPropagation();
@@ -1068,9 +1129,23 @@ function bindGlobalClose(){
 
 // ─── AudioContext 解锁（首次用户交互时调用，解除自动播放限制）───
 let _audioCtx = null;
+let _sfxGain = null;          /* 音效主增益节点，统一控制内置音效 + 用户音效音量 */
 function getAudioCtx() {
-  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (!_audioCtx) {
+    _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    _sfxGain = _audioCtx.createGain();
+    _sfxGain.gain.value = cfg.sfxVolume !== undefined ? cfg.sfxVolume : 0.8;
+    _sfxGain.connect(_audioCtx.destination);
+  }
   return _audioCtx;
+}
+function getSfxGain(){ getAudioCtx(); return _sfxGain; }
+/** 设置音效音量，同时更新 WebAudio GainNode 和正在播放的用户 Audio 元素 */
+function setSfxVolume(v) {
+  cfg.sfxVolume = v;
+  if (_sfxGain) _sfxGain.gain.value = v;
+  /* 若当前有用户上传音效正在播放，同步调整其音量 */
+  if (_playingUserAudio) _playingUserAudio.volume = v;
 }
 document.addEventListener("touchstart", () => { try { getAudioCtx().resume(); } catch(e){} }, { once: true, passive: true });
 document.addEventListener("click",      () => { try { getAudioCtx().resume(); } catch(e){} }, { once: true, passive: true });
@@ -2208,13 +2283,25 @@ window.openApp = id=>{
   if(id==="chatApp"){
     renderChats(); unreadCount=0; showHomeTypingBar(false);
     if((replyTimer)&&!typingNode){
-      const f=document.getElementById("chatFlow");
-      if(f){
-        typingNode=document.createElement("div"); typingNode.className="row opp";
-        const av=imgs.oppAvatar||window.DEFAULTS.PH_SVG;
-        typingNode.innerHTML=`${cfg.showAvatar?`<div class="av-col"><img class="av" src="${av}"></div>`:""}
-          <div class="typing-pure"><span class="t-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="tip-text">${escapeHtml(cfg.typingText||"正在输入")}</span></div>`;
-        f.appendChild(typingNode); f.scrollTop=f.scrollHeight;
+      /* 分帧渲染进行中——延迟到渲染完成后再插入 typing 节点 */
+      if(_chatRenderInProgress){
+        _pendingChatOps = (f) => {
+          if(!f||!replyTimer||typingNode) return;
+          typingNode=document.createElement("div"); typingNode.className="row opp";
+          const av=imgs.oppAvatar||window.DEFAULTS.PH_SVG;
+          typingNode.innerHTML=`${cfg.showAvatar?`<div class="av-col"><img class="av" src="${av}"></div>`:""}
+            <div class="typing-pure"><span class="t-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="tip-text">${escapeHtml(cfg.typingText||"正在输入")}</span></div>`;
+          f.appendChild(typingNode); f.scrollTop=f.scrollHeight;
+        };
+      } else {
+        const f=document.getElementById("chatFlow");
+        if(f){
+          typingNode=document.createElement("div"); typingNode.className="row opp";
+          const av=imgs.oppAvatar||window.DEFAULTS.PH_SVG;
+          typingNode.innerHTML=`${cfg.showAvatar?`<div class="av-col"><img class="av" src="${av}"></div>`:""}
+            <div class="typing-pure"><span class="t-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class="tip-text">${escapeHtml(cfg.typingText||"正在输入")}</span></div>`;
+          f.appendChild(typingNode); f.scrollTop=f.scrollHeight;
+        }
       }
     }
   }

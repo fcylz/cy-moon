@@ -954,6 +954,15 @@
             </div>
           </div>
           <div class="snav-list" style="margin-top:8px;">
+            <div class="snav-item" style="cursor:default;padding:8px 12px;flex-wrap:wrap;">
+              <span style="font-size:calc(var(--fs)*.78);color:var(--text-mute);width:100%;margin-bottom:4px;">音效音量</span>
+              <div class="range-pair" style="align-items:center;width:100%;">
+                <input class="inp sm" type="range" id="cfg_sfxVolume" min="0" max="100" step="5" value="80" oninput="setSfxVolume(this.value/100);document.getElementById('sfxVolVal').innerText=this.value+'%';saveAll();" style="width:100%;">
+                <span id="sfxVolVal" style="min-width:32px;text-align:right;font-size:calc(var(--fs)*.75);color:var(--text-mute);">80%</span>
+              </div>
+            </div>
+          </div>
+          <div class="snav-list" style="margin-top:8px;">
             <div class="snav-item" onclick="openSoundModal()">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
               <span>音效管理</span>
