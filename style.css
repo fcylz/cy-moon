@@ -3583,6 +3583,17 @@
   border: solid #fff; border-width: 0 1.5px 1.5px 0;
   transform: rotate(45deg);
 }
+/* ♥ 贴纸图片加载失败：显示破碎占位符 */
+.sticker-item.broken img,
+.sp-item.broken img { display: none; }
+.sticker-item.broken::after,
+.sp-item.broken::after {
+  content: "🖼️";
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28px; opacity: .3;
+  background: var(--bg-soft);
+}
 
 /* â”€â”€ æ·»åŠ è¡¨æƒ…åŒ…å¼¹çª— â”€â”€ */
 .tab-switch {

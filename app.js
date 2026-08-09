@@ -899,14 +899,13 @@ function buildChatCtx(){
   };
 }
 
-// Builds the DOM node(s) for chats[idx] (a date divider + the row, or just the row).
-// Appends them into `frag` (a DocumentFragment or the live #chatFlow element).
-function buildMsgInto(frag, m, idx, ctx, lastDateRef){
-  if(m.date&&m.date!==lastDateRef.v){ const d=document.createElement("div"); d.className="dt-div"; d.innerHTML=`<span class="dt-text">${escapeHtml(m.date)}</span>`; frag.appendChild(d); lastDateRef.v=m.date; }
+// 只构建消息 DOM 行，不附加到父节点（由调用方决定插入方式）。
+// 返回创建的 DOM 元素（普通消息为 div.row，歌词为 div.row.lyric）。
+function _buildMsgRow(m, idx, ctx){
   if(m.lyric){
     const row=document.createElement("div"); row.className="row lyric"; row.id=`msg-row-${idx}`;
     row.innerHTML=`<div class="l-c"><div class="l-line">${escapeHtml(m.text)}</div>${m.translation?`<span class="l-tr">${escapeHtml(m.translation)}</span>`:""}</div>`;
-    frag.appendChild(row); return;
+    return row;
   }
   const isSelf=m.sender==="self";
   const row=document.createElement("div"); row.className="row "+(isSelf?"self":"opp"); row.id=`msg-row-${idx}`;
@@ -919,14 +918,12 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   const showOppTime=ctx.showTime&&!isSelf&&cfg.oppCustomTime&&!!cfg.oppTime;
   const oppTimeVal=showOppTime?getOppDisplayTime():"";
   const oppTimeSpan=showOppTime?`<span class="opp-time-val" onclick="event.stopPropagation();openOppTimeModal()">${oppTimeVal}</span>`:"";
-  // av-meta items (shown below avatar in styles 2 & 4)
   const avItems=[];
   if(timeStr) avItems.push(timeStr);
   if(oppTimeSpan&&isAvStyle) avItems.push(oppTimeSpan);
   if(ctx.showRead&&isSelf) avItems.push(ctx.readTxt);
   if(ctx.showSelfRead&&!isSelf) avItems.push(ctx.readTxt);
   const avMetaHtml=avItems.length?`<div class="av-meta">${avItems.join("<br>")}</div>`:"";
-  // row-meta items (shown below bubble in styles 1 & 3)
   const rowItems=[];
   if(timeStr) rowItems.push(timeStr);
   if(oppTimeSpan&&!isAvStyle) rowItems.push(oppTimeSpan);
@@ -936,7 +933,7 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   const quoteHtml=m.quote?`<div class="quote-line" data-jump="${escapeHtml(m.quote)}"><div class="qarm"></div><div class="qtxt">${escapeHtml(m.quote)}</div></div>`:"";
   const transClass=openTrans.has(idx)?"show":"";
   const bodyHtml = m.sticker
-    ? `<img class="sticker-msg" data-idx="${idx}" src="${(ctx.stkMap.get(m.stickerId)||{}).src||window.DEFAULTS.PH_SVG}" loading="lazy">`
+    ? `<img class="sticker-msg" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy" onerror="this.src='${window.DEFAULTS.PH_SVG}'">`
     : `<div class="bubble message ${isSelf?"message-sent":"message-received"}" data-idx="${idx}">${escapeHtml(m.text).replace(/\n/g,"<br>")}</div>
       ${m.translation?`<div class="bubble-translation ${transClass}" id="trans-${idx}">${escapeHtml(m.translation)}</div>`:""}`;
   row.innerHTML=`
@@ -946,36 +943,47 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
       ${bodyHtml}
       ${quoteHtml}${stackMetaHtml}
     </div>`;
-  /* ⭐ 原始代码：每气泡绑定 7 个事件监听器（mousedown/mouseup/mousemove/touchstart/touchend/touchmove/contextmenu）
-     if(m.sticker) bindStickerEvents(row,idx); else bindBubbleEvents(row,idx);
-     const ql=row.querySelector(".quote-line");
-     if(ql) ql.addEventListener("click",e=>{ e.stopPropagation(); jumpToMsg(ql.dataset.jump); });
-     改为事件委托：在 #chatFlow 上统一监听，2000 条消息只需 1 组监听器而非 14000 个 */
-  frag.appendChild(row);
+  return row;
 }
 
-// Full rebuild — used whenever messages were reordered/edited/removed/imported,
-// or display settings that affect every row (avatar/time/name visibility) changed.
+// 完整构建：日期分割线 + 消息行，append 到 frag 末尾（供 appendNewChats 用）
+function buildMsgInto(frag, m, idx, ctx, lastDateRef){
+  if(m.date&&m.date!==lastDateRef.v){ const d=document.createElement("div"); d.className="dt-div"; d.innerHTML=`<span class="dt-text">${escapeHtml(m.date)}</span>`; frag.appendChild(d); lastDateRef.v=m.date; }
+  frag.appendChild(_buildMsgRow(m, idx, ctx));
+}
+
+// 全量重建：从最新到最旧分块渲染，第一个 chunk 立刻显示最新消息
 let _chatRenderInProgress=false;
 function renderChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
   _chatRenderInProgress=true;
   const ctx=buildChatCtx();
   f.innerHTML="";
-  const CHUNK=20;
-  let cursor=0, lastDateRef={v:""};
+  const CHUNK=25, total=chats.length;
+  let cursor=total; /* 从尾部开始，最旧的最先 0，最新的在 N-1 */
   (function renderChunk(){
     const frag=document.createDocumentFragment();
-    const end=Math.min(cursor+CHUNK, chats.length);
-    for(let i=cursor;i<end;i++) buildMsgInto(frag,chats[i],i,ctx,lastDateRef);
-    f.appendChild(frag);
-    cursor=end;
-    if(cursor<chats.length){ requestAnimationFrame(renderChunk); return; }
+    const start=Math.max(cursor-CHUNK, 0);
+    /* 块内从最新→最旧遍历，prepend 到 frag 头部，维持 oldest-top / newest-bottom */
+    for(let i=cursor-1;i>=start;i--){
+      const m=chats[i];
+      /* 日期分割线：当前消息日期 ≠ 前一条（i-1）日期时插入，同时首条必显 */
+      if(i===0||m.date!==chats[i-1].date){
+        const d=document.createElement("div"); d.className="dt-div";
+        d.innerHTML=`<span class="dt-text">${escapeHtml(m.date)}</span>`;
+        frag.insertBefore(d, frag.firstChild);
+      }
+      /* 行 prepend 到 frag 头部 */
+      frag.insertBefore(_buildMsgRow(m,i,ctx), frag.firstChild);
+    }
+    /* 整个块 prepend 到 #chatFlow → 旧块在上，新块在下 */
+    f.insertBefore(frag, f.firstChild);
+    cursor=start;
+    if(cursor>0){ requestAnimationFrame(renderChunk); return; }
     _chatRenderInProgress=false;
     f.scrollTop=f.scrollHeight;
-    renderedMsgCount=chats.length; renderedLastDate=lastDateRef.v;
+    renderedMsgCount=total; renderedLastDate=chats[total-1]&&chats[total-1].date||"";
     unreadCount=0; updateScrollBot();
-    /* openApp 可能在 renderChats 期间尝试插入 typing 节点——在这里补做 */
     _flushPendingChatOps(f);
   })();
 }
@@ -1874,7 +1882,7 @@ window.renderStickers = () => {
     it.className="sticker-item"+(s.shielded?" shielded":"");
     const chkHtml=isStickerBatchSelecting?`<input type="checkbox" class="chk" ${stickerSelected.includes(s.id)?"checked":""} onchange="event.stopPropagation();stickerSelToggle('${s.id}',this.checked)">`:"";
     it.innerHTML=`
-      <img src="${s.src}" loading="lazy">
+      <img src="${s.cachedSrc||s.src}" loading="lazy" onload="_cacheStickerThumbnailById('${s.id}')" onerror="this.parentElement.classList.add('broken')">
       <span class="sti-op sti-shield" onclick="event.stopPropagation();toggleStickerShield('${s.id}')" title="${s.shielded?"恢复":"屏蔽"}">${s.shielded?STICKER_EYE_OFF_SVG:STICKER_EYE_SVG}</span>
       <span class="sti-op sti-del" onclick="event.stopPropagation();delSticker('${s.id}')" title="删除">${STICKER_X_SVG}</span>
       ${chkHtml}`;
@@ -1969,7 +1977,28 @@ function onPickSticker(e){
     });
   });
 }
-function resolveStickerSrc(id){ const s=stickers.find(x=>x.id===id); return s?s.src:window.DEFAULTS.PH_SVG; }
+function resolveStickerSrc(id){ const s=stickers.find(x=>x.id===id); return s ? (s.cachedSrc || s.src) : window.DEFAULTS.PH_SVG; }
+
+/* 外部 URL 贴纸首次加载成功后，canvas 转 base64 缩略图缓存，后续不依赖外链 */
+function _cacheStickerThumbnailById(id) {
+  const s = stickers.find(x => x.id === id);
+  if (!s || s.cachedSrc || s.type !== "url") return;
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    try {
+      const maxW = 200;
+      const w = Math.min(img.naturalWidth, maxW);
+      const h = img.naturalHeight * (w / img.naturalWidth);
+      const c = document.createElement("canvas"); c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      s.cachedSrc = c.toDataURL("image/jpeg", 0.5);
+      saveAllDebounced();
+    } catch(_) { /* 跨域画布污染，放弃缓存 */ }
+  };
+  img.onerror = () => {}; /* 加载失败不处理，已在 onerror 里显示占位 */
+  img.src = s.src;
+}
 
 // ─── 聊天内快捷发送表情包 ───
 window.toggleStickerPicker = () => {
@@ -1992,7 +2021,7 @@ function renderStickerPickerGrid(){
   if(stickerPickerPage>=totalPages) stickerPickerPage=totalPages-1;
   if(stickerPickerPage<0) stickerPickerPage=0;
   const page=visible.slice(stickerPickerPage*STICKER_PICKER_PAGE_SIZE,(stickerPickerPage+1)*STICKER_PICKER_PAGE_SIZE);
-  let html=page.map(s=>`<div class="sp-item" onclick="sendSticker('${s.id}')"><img src="${s.src}" loading="lazy"></div>`).join("");
+  let html=page.map(s=>`<div class="sp-item" onclick="sendSticker('${s.id}')"><img src="${s.cachedSrc||s.src}" loading="lazy" onload="_cacheStickerThumbnailById('${s.id}')" onerror="this.parentElement.classList.add('broken')"></div>`).join("");
   if(totalPages>1){
     html+=`<div class="sp-pager">
       <button class="sp-pg-btn" onclick="event.stopPropagation();stickerPickerPrevPage()" ${stickerPickerPage===0?'disabled':''}>◀</button>
