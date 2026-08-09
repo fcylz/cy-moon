@@ -1580,7 +1580,7 @@ async function fireReply(){
     else { text=arr[0]; if(transArr.length) trans=transArr[0]; }
   }
   let quote="";
-  if(!isLyric&&cfg.quoteOn&&Math.random()<0.3){ const my=chats.slice(-50).filter(c=>c.sender==="self").slice(-10); if(my.length) quote=my[Math.floor(Math.random()*my.length)].text; }
+  if(!isLyric&&cfg.quoteOn&&Math.random()<0.3){ const my=chats.filter(c=>c.sender==="self").slice(-10); if(my.length) quote=my[Math.floor(Math.random()*my.length)].text; }
   let name=texts.opp_name||"温语", avatar=imgs.oppAvatar||"", memberId="";
   if(cfg.groupMode&&groupMembers.length){ const m=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name=m.name; avatar=m.avatar||window.DEFAULTS.PH_SVG; memberId=m.id; }
   _addChatMsg({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,memberId,fragments});
