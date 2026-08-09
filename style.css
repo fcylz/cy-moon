@@ -63,10 +63,12 @@
     background: var(--bg); position: relative;
     display: flex; flex-direction: column; overflow: hidden;
     transition: background .4s var(--ease);
+    padding-left: env(safe-area-inset-left,0px);
+    padding-right: env(safe-area-inset-right,0px);
   }
   @media(min-width:480px) {
     /* ⭐ 原始代码：.viewport { height: 94vh; border-radius: 32px; box-shadow: 0 30px 80px rgba(0,0,0,.5); } */
-    .viewport { height: 94vh; height: 94dvh; border-radius: 32px; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+    .viewport { height: 94vh; height: 94dvh; border-radius: 32px; box-shadow: 0 30px 80px rgba(0,0,0,.5); padding-left: env(safe-area-inset-left,0px); padding-right: env(safe-area-inset-right,0px); }
   }
   
   /* â”€â”€â”€ Welcome â”€â”€ */
@@ -929,7 +931,7 @@
   .av-col { display:flex; flex-direction:column; align-items:center; gap:5px; flex-shrink:0; width:var(--av-col-w,40px); justify-content:flex-end; padding-bottom:2px; }
   .av-col .av { width:var(--av-size,32px); height:var(--av-size,32px); border-radius:50%; background:var(--ph-bg); object-fit:cover; flex-shrink:0; }
   .av-meta { font-size:9px; color:var(--text-mute); letter-spacing:.5px; text-align:center; line-height:1.4; display:none; max-width:calc(var(--av-col-w,40px) + 4px); word-break:keep-all; }
-  .stack { display:flex; flex-direction:column; gap:3px; max-width:82%; }
+  .stack { display:flex; flex-direction:column; gap:3px; max-width:calc(100% - var(--av-col-w,40px) - 16px); }
   .row.self .stack { align-items:flex-end; }
   .name-tag { font-size:calc(var(--fs)*.68); color:var(--text-mute); padding:0 4px 1px; letter-spacing:1px; line-height:1.2; min-height:0; }
   .bubble {
@@ -939,6 +941,7 @@
   border-radius: 18px;
   background: var(--surface);
   word-wrap: break-word;
+  overflow-wrap: anywhere;
   cursor: pointer;
   /* ⭐ 原 box-shadow 有三层叠加（每气泡 3 个 compositor 层），简化为 1 层，2000 条消息可减少大量 paint 开销 */
   /* box-shadow: 0 1px 5px rgba(0,0,0,.07), 0 3px 14px rgba(0,0,0,.05), inset 0 1px 0 rgba(255,255,255,.05); */
@@ -1060,7 +1063,7 @@
   
   /* Input styles */
   .input-style-1 { padding:10px 12px 14px; display:flex; gap:8px; align-items:center; }
-  .in-field { flex:1; height:38px; background:var(--surface); border:1px solid var(--border); border-radius:19px; padding:0 16px; font-size:calc(var(--chat-fs)*.95); outline:none; color:var(--text); }
+  .in-field { flex:1; min-width:0; height:38px; background:var(--surface); border:1px solid var(--border); border-radius:19px; padding:0 16px; font-size:calc(var(--chat-fs)*.95); outline:none; color:var(--text); }
   .in-field:focus { border-color:var(--text-mute); }
   .in-btn { width:38px; height:38px; border-radius:50%; border:none; cursor:pointer; display:flex; justify-content:center; align-items:center; flex-shrink:0; transition:.15s; }
   .in-btn svg { width:16px; height:16px; }
@@ -1068,21 +1071,28 @@
   .in-btn.speak { background:var(--surface); color:var(--text); border:1px solid var(--border); }
   .in-btn:active { transform:scale(.93); }
   .input-style-2 { padding:10px 10px 12px; }
-  .i2-input-row { display:flex; background:var(--surface); border:1px solid var(--border); border-radius:22px; padding:4px 4px 4px 14px; align-items:center; gap:6px; }
-  .i2-field { flex:1; background:transparent; border:none; outline:none; font-size:calc(var(--chat-fs)*.92); color:var(--text); height:32px; }
+  .i2-input-row { display:flex; background:var(--surface); border:1px solid var(--border); border-radius:22px; padding:4px 4px 4px 14px; align-items:center; gap:6px; min-width:0; }
+  .i2-field { flex:1; min-width:0; background:transparent; border:none; outline:none; font-size:calc(var(--chat-fs)*.92); color:var(--text); height:32px; }
   .i2-send { width:32px; height:32px; border-radius:50%; background:var(--text); border:none; display:flex; justify-content:center; align-items:center; color:var(--bg); cursor:pointer; transition:.15s; }
   .i2-send svg { width:12px; height:12px; }
   .i2-send:active { transform:scale(.92); }
   .i2-speak-btn { width:32px; height:32px; border-radius:50%; background:transparent; border:none; display:flex; justify-content:center; align-items:center; cursor:pointer; color:var(--text-mute); flex-shrink:0; transition:.15s; margin-right:-4px; }
   .i2-speak-btn svg { width:13px; height:13px; }
+  .i2-img-btn { width:32px; height:32px; border-radius:50%; background:transparent; border:none; display:flex; justify-content:center; align-items:center; cursor:pointer; color:var(--text-mute); flex-shrink:0; transition:.15s; }
+  .i2-img-btn svg { width:14px; height:14px; }
+  .i2-img-btn:active { transform:scale(.92); opacity:.7; }
   .input-style-3 { display:flex; margin:8px 12px 12px; padding:4px 4px 4px 14px; align-items:center; gap:4px; background:var(--surface); border:1px solid var(--border); border-radius:22px; }
-  .i3-field { flex:1; background:transparent; border:none; outline:none; font-size:calc(var(--chat-fs)*.95); height:32px; }
+  .i3-field { flex:1; min-width:0; background:transparent; border:none; outline:none; font-size:calc(var(--chat-fs)*.95); height:32px; }
   .i3-send { width:32px; height:32px; border-radius:50%; background:var(--text); color:var(--bg); border:none; display:flex; justify-content:center; align-items:center; cursor:pointer; }
   .i3-send.alt { background:var(--bg-soft); color:var(--text); }
+  .i3-send.img { background:var(--bg-soft); color:var(--text-mute); }
+  .i3-send.img:active { opacity:.7; }
   .input-style-4 { display:flex; padding:10px 14px 14px; align-items:center; gap:6px; }
-  .i4-field { flex:1; background:transparent; border:none; border-bottom:1px dashed var(--line); outline:none; font-size:calc(var(--chat-fs)*.95); color:var(--text); height:30px; font-family:monospace; letter-spacing:1px; }
+  .i4-field { flex:1; min-width:0; background:transparent; border:none; border-bottom:1px dashed var(--line); outline:none; font-size:calc(var(--chat-fs)*.95); color:var(--text); height:30px; font-family:monospace; letter-spacing:1px; }
   .i4-send { width:30px; height:30px; border:none; background:transparent; color:var(--text); display:flex; justify-content:center; align-items:center; cursor:pointer; }
   .i4-send.alt { color:var(--text-mute); }
+  .i4-send.img { color:var(--text-mute); opacity:.65; transition:opacity .2s; }
+  .i4-send.img:active { opacity:1; }
   
   /* â”€â”€â”€ Settings é‡æž„ â”€â”€ */
 .settings-scroll {
@@ -3671,7 +3681,7 @@
   flex-direction: column;
 }
 .sticker-picker.on {
-  max-height: 52vw;
+  max-height: min(52vw, 48vh, 320px);
   opacity: 1;
   pointer-events: auto;
 }
@@ -3793,9 +3803,12 @@
 /* â”€â”€ è¾“å…¥æ è¡¨æƒ…æŒ‰é’®ï¼ˆç»Ÿä¸€å„ styleï¼‰â”€â”€ */
 .in-btn.sticker { opacity: .65; transition: opacity .2s, color .2s; }
 .in-btn.sticker:active { opacity: 1; color: var(--accent); }
+.in-btn.img { background:var(--surface); color:var(--text-mute); border:1px solid var(--border); }
+.in-btn.img:active { opacity:.7; transform:scale(.93); }
 .i2-sticker-btn {
   background: none; border: none; cursor: pointer;
   color: var(--text); padding: 6px;
+  width: 30px; height: 30px;
   display: flex; align-items: center; justify-content: center;
   opacity: .65; transition: opacity .2s, color .2s;
   flex-shrink: 0;
@@ -4233,4 +4246,81 @@
 .av-size-tab.active {
   background: #fff; color: var(--text,#333);
   box-shadow: 0 1px 3px rgba(0,0,0,0.1); font-weight: 600;
+}
+
+/* ══════════════════════════════════════ */
+/*  设备自适应断点                        */
+/* ══════════════════════════════════════ */
+
+/* ── 窄屏: <360px (iPhone SE / 小屏安卓) ── */
+@media(max-width:360px) {
+  /* Style 1: 缩小按钮+间距 */
+  .input-style-1 { gap:5px; padding:8px 8px 14px; }
+  .in-btn { width:32px; height:32px; }
+  .in-btn svg { width:14px; height:14px; }
+  .in-field { height:34px; padding:0 12px; font-size:calc(var(--chat-fs)*.88); }
+
+  /* Style 2: 缩小按钮+间距 */
+  .i2-input-row { gap:4px; padding:3px 2px 3px 10px; }
+  .i2-speak-btn { width:28px; height:28px; margin-right:-2px; }
+  .i2-speak-btn svg { width:11px; height:11px; }
+  .i2-img-btn { width:28px; height:28px; }
+  .i2-img-btn svg { width:12px; height:12px; }
+  .i2-send { width:28px; height:28px; }
+  .i2-send svg { width:11px; height:11px; }
+  .i2-sticker-btn { width:26px; height:26px; padding:4px; }
+  .i2-sticker-btn svg { width:15px; height:15px; }
+  .i2-field { height:28px; font-size:calc(var(--chat-fs)*.85); }
+
+  /* Style 3: 缩小按钮+间距 */
+  .input-style-3 { margin:6px 8px 10px; padding:3px 2px 3px 10px; gap:3px; }
+  .i3-send { width:28px; height:28px; }
+  .i3-send svg { width:12px; height:12px; }
+  .i3-field { height:28px; font-size:calc(var(--chat-fs)*.88); }
+
+  /* Style 4: 缩小间距 */
+  .input-style-4 { padding:8px 10px 12px; gap:4px; }
+  .i4-send { width:26px; height:26px; }
+  .i4-send svg { width:12px; height:12px; }
+  .i4-field { height:28px; font-size:calc(var(--chat-fs)*.88); }
+
+  /* 聊天气泡适配 */
+  .chat-flow { padding:6px 8px 2px; }
+  .bubble { padding:8px 12px; border-radius:14px; }
+  .row { gap:6px; }
+  .name-tag { font-size:calc(var(--fs)*.62); }
+
+  /* 聊天头像栏 */
+  .head-style-1 { padding:8px 10px; gap:6px; }
+  .chat-head-info { gap:6px; }
+  .chat-head-info .av { width:30px; height:30px; }
+}
+
+/* ── 矮屏/横屏: 高度 <480px ── */
+@media(max-height:480px) {
+  .app-head { height:40px; padding:0 10px; }
+  .chat-head .head-style-1 { padding:6px 8px; }
+  .chat-head .chat-head-info .av { width:28px; height:28px; }
+  .chat-flow { padding:4px 8px 2px; gap:6px; }
+  .input-style-1 { padding:6px 8px 10px; gap:6px; }
+  .in-btn { width:32px; height:32px; }
+  .in-btn svg { width:14px; height:14px; }
+  .in-field { height:34px; padding:0 12px; }
+  .i2-input-row { padding:3px 2px 3px 10px; }
+  .i2-speak-btn, .i2-img-btn, .i2-send { width:28px; height:28px; }
+  .i2-sticker-btn { width:26px; height:26px; padding:4px; }
+  .i2-sticker-btn svg { width:15px; height:15px; }
+  .input-style-3 { margin:4px 8px 8px; padding:2px 2px 2px 10px; }
+  .i3-send { width:28px; height:28px; }
+  .input-style-4 { padding:6px 10px 10px; gap:4px; }
+  .bubble { padding:8px 12px; }
+  .row { gap:6px; }
+}
+
+/* ── 平板/宽屏扩展: >=600px 让聊天界面更舒展 ── */
+@media(min-width:600px) {
+  .viewport {
+    width: 460px;
+    margin: 0 auto;
+  }
 }
