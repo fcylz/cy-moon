@@ -3188,22 +3188,51 @@ window.exportSurvey = (id) => {
   toast("已导出");
 };
 
+// 解析 TXT 问卷：
+//   第 1 行 = 问卷标题
+//   --- 分隔每个题目块（末尾可省略，空行自动忽略）
+//   每题块内：第 1 行是题目文本，后续每行是一个选项
+//   每道题至少需要 2 个选项才会被导入；导入默认勾选附加评论
+function parseTxtToSurvey(txt){
+  const lines = String(txt).split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length>0);
+  const title = lines.shift() || "未命名问卷";
+  const blocks = [];
+  let cur = null;
+  for (const line of lines){
+    if (/^-{3,}$/.test(line)){ cur = null; continue; }   // --- 分隔符，结束当前题目块
+    if (!cur){ cur = []; blocks.push(cur); }
+    cur.push(line);
+  }
+  const questions = blocks.map(b=>{
+    const [text, ...opts] = b;
+    if (!text || opts.length < 2) return null;
+    return { text, options: opts, needOptions: true, needComment: true };
+  }).filter(Boolean);
+  return { title, questions };
+}
+
 function onPickSurvey(e){
   const f = e.target.files[0]; if (!f) return;
   const r = new FileReader();
   r.onload = async ev => {
     try {
-      const d = JSON.parse(ev.target.result);
-      if (!d.title || !Array.isArray(d.questions)) { toast("文件格式不正确","warn"); return; }
-      surveys.push({
-        id: "s"+Date.now(),
-        title: d.title,
-        questions: d.questions.map(q=>({
+      const raw = ev.target.result;
+      let title, questions;
+      if (/\.txt$/i.test(f.name)){
+        const d = parseTxtToSurvey(raw);
+        if (!d.questions.length) { toast("未解析到题目","warn"); return; }
+        title = d.title; questions = d.questions;
+      } else {
+        const d = JSON.parse(raw);
+        if (!d.title || !Array.isArray(d.questions)) { toast("文件格式不正确","warn"); return; }
+        title = d.title;
+        questions = d.questions.map(q=>({
           text: q.text || "",
           options: Array.isArray(q.options) ? q.options.filter(o=>o) : [],
           needComment: !!q.needComment
-        })).filter(q=>q.text && q.options.length>=2)
-      });
+        })).filter(q=>q.text && q.options.length>=2);
+      }
+      surveys.push({ id: "s"+Date.now(), title, questions });
       await saveAll();
       renderSurveys();
       toast("导入成功");
@@ -3396,22 +3425,32 @@ window.closeSurveyFull = () => {
   document.getElementById("surveyFull").classList.remove("on");
 };
 
+// 对方独立思考：每题进入后 5~30 秒内随机做出选择，不受用户选择影响
+function scheduleOppPick(){
+  clearTimeout(sfTimer);
+  sfTimer = setTimeout(()=>{
+    const sf = surveyFill; if (!sf || sf.stage !== "pick") return;
+    if (sf.oppIdx === -1){
+      const q = sf.survey.questions[sf.qIndex];
+      sf.oppIdx = randInt(0, q.options.length-1);
+      sf.oppPicked = true;
+      renderFillStep();
+    }
+  }, randInt(5,30)*1000);
+}
+
 window.startSurveyFill = (id) => {
   const survey = surveys.find(s=>s.id===id);
   if (!survey || !survey.questions.length){ toast("问卷为空","warn"); return; }
-  surveyFill = { surveyId:id, survey, qIndex:0, selfIdx:-1, oppIdx:-1, stage:"pick", reselectMsg:"", curAnswer:null, answers:[] };
+  surveyFill = { surveyId:id, survey, qIndex:0, selfIdx:-1, oppIdx:-1, oppPicked:false, stage:"pick", reselectMsg:"", curAnswer:null, answers:[] };
   openSurveyFull();
   renderFillStep();
+  scheduleOppPick();
 };
 
 window.fillSelectSelf = (i) => {
   const sf = surveyFill; if (!sf || sf.stage!=="pick") return;
-  const firstPick = sf.selfIdx === -1;
   sf.selfIdx = i;
-  if (firstPick){
-    const q = sf.survey.questions[sf.qIndex];
-    sf.oppIdx = randInt(0, q.options.length-1);
-  }
   renderFillStep();
 };
 
@@ -3427,10 +3466,14 @@ window.fillReselect = () => {
       sf.stage = "reselect-refused";
       sf.reselectMsg = "对方拒绝了重选请求";
       renderFillStep();
-      sfTimer = setTimeout(()=>{ sf.stage="pick"; renderFillStep(); }, 1100);
+      sfTimer = setTimeout(()=>{
+        sf.stage="pick"; renderFillStep();
+        if (sf.oppIdx === -1) scheduleOppPick();  // 对方仍未选择，继续独立思考计时
+      }, 1100);
     } else {
       const q = sf.survey.questions[sf.qIndex];
       sf.oppIdx = randInt(0, q.options.length-1);
+      sf.oppPicked = true;
       sf.stage = "reselect-done";
       sf.reselectMsg = "选择完毕";
       renderFillStep();
@@ -3440,7 +3483,7 @@ window.fillReselect = () => {
 };
 
 window.fillNext = () => {
-  const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1) return;
+  const sf = surveyFill; if (!sf || sf.stage!=="pick" || sf.selfIdx===-1 || sf.oppIdx===-1) return;
   proceedAfterPick();
 };
 
@@ -3475,9 +3518,9 @@ window.fillNextFromComment = () => {
 function nextQuestion(){
   const sf = surveyFill;
   sf.qIndex++;
-  sf.selfIdx = -1; sf.oppIdx = -1; sf.stage = "pick"; sf.reselectMsg = ""; sf.curAnswer = null;
+  sf.selfIdx = -1; sf.oppIdx = -1; sf.oppPicked = false; sf.stage = "pick"; sf.reselectMsg = ""; sf.curAnswer = null;
   if (sf.qIndex >= sf.survey.questions.length) renderFillSummary();
-  else renderFillStep();
+  else { renderFillStep(); scheduleOppPick(); }
 }
 
 function oppBlock(q, sf, dim){
@@ -3494,33 +3537,51 @@ function indicatorHtml(msg, spinning){
 function renderFillStep(){
   const sf = surveyFill;
   const q = sf.survey.questions[sf.qIndex];
+  const selfNm = texts.l1_name || texts.l2_name || "我";
+  const oppNm = texts.opp_name || "温语";
   document.getElementById("sfFullTitle").innerText = sf.survey.title;
   document.getElementById("sfFullProgress").innerText = `${sf.qIndex+1} / ${sf.survey.questions.length}`;
 
   let html = `<div class="qf-question">${escapeHtml(q.text)}</div><div class="qf-options">`;
   q.options.forEach((opt,i)=>{
-    html += `<div class="qf-opt ${i===sf.selfIdx?"selected":""}" onclick="fillSelectSelf(${i})">${escapeHtml(opt)}</div>`;
+    const tags = [];
+    if (i === sf.selfIdx) tags.push(`<span class="qf-opt-name self">${escapeHtml(selfNm)}</span>`);
+    if (i === sf.oppIdx) tags.push(`<span class="qf-opt-name opp">${escapeHtml(oppNm)}</span>`);
+    html += `<div class="qf-opt" onclick="fillSelectSelf(${i})">
+      <span class="qf-opt-txt">${escapeHtml(opt)}</span>
+      ${tags.length?`<span class="qf-opt-tags">${tags.join("")}</span>`:""}
+    </div>`;
   });
   html += `</div>`;
 
-  if (sf.selfIdx > -1){
-    if (sf.stage === "pick"){
-      html += oppBlock(q,sf) + `<div class="qf-actions">
+  const selfPicked = sf.selfIdx > -1;
+  const oppPicked = sf.oppIdx > -1;
+
+  if (sf.stage === "pick"){
+    if (selfPicked && oppPicked){
+      html += `<div class="qf-actions">
         <button class="pill-btn" onclick="fillReselect()">重选</button>
         <button class="pill-btn" onclick="fillNext()">下一步</button>
       </div>`;
-    } else if (sf.stage === "reselecting"){
-      html += oppBlock(q,sf,true) + indicatorHtml(sf.reselectMsg, true);
-    } else if (sf.stage === "reselect-refused" || sf.stage === "reselect-done"){
-      html += oppBlock(q,sf) + indicatorHtml(sf.reselectMsg, false);
-    } else if (sf.stage === "comment-wait"){
-      html += oppBlock(q,sf) + indicatorHtml("对方正在输入评论…", true);
-    } else if (sf.stage === "comment"){
-      html += oppBlock(q,sf)
-        + `<div class="qf-comment"><div class="qf-comment-label">对方评论</div><div class="qf-comment-text">${escapeHtml(sf.curAnswer.oppComment)}</div></div>
-        <textarea class="fld area" id="qfSelfComment" placeholder="写下你的评论…（可留空）"></textarea>
-        <button class="pill-btn" onclick="fillNextFromComment()">下一步</button>`;
+    } else if (selfPicked){
+      html += indicatorHtml("对方正在选择…", true)
+        + `<div class="qf-actions"><button class="pill-btn" onclick="fillReselect()">重选</button></div>`;
+    } else if (oppPicked){
+      html += indicatorHtml(`对方选择了「${escapeHtml(q.options[sf.oppIdx])}」`, false);
+    } else {
+      html += indicatorHtml("对方正在查看题目…", true);
     }
+  } else if (sf.stage === "reselecting"){
+    html += (oppPicked ? oppBlock(q,sf,true) : "") + indicatorHtml(sf.reselectMsg, true);
+  } else if (sf.stage === "reselect-refused" || sf.stage === "reselect-done"){
+    html += (oppPicked ? oppBlock(q,sf) : "") + indicatorHtml(sf.reselectMsg, false);
+  } else if (sf.stage === "comment-wait"){
+    html += oppBlock(q,sf) + indicatorHtml("对方正在输入评论…", true);
+  } else if (sf.stage === "comment"){
+    html += oppBlock(q,sf)
+      + `<div class="qf-comment"><div class="qf-comment-label">对方评论</div><div class="qf-comment-text">${escapeHtml(sf.curAnswer.oppComment)}</div></div>
+      <textarea class="fld area" id="qfSelfComment" placeholder="写下你的评论…（可留空）"></textarea>
+      <button class="pill-btn" onclick="fillNextFromComment()">下一步</button>`;
   }
 
   document.getElementById("sfFullBody").innerHTML = html;

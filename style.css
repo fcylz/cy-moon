@@ -3470,12 +3470,18 @@
   background: var(--surface);
   transition: border-color .18s, background .18s, transform .12s;
   -webkit-tap-highlight-color: transparent;
+  display:flex; align-items:center; gap:10px;
 }
 .qf-opt:active { transform: scale(.985); }
-.qf-opt.selected {
-  border-color: var(--accent); background: var(--accent-soft);
-  font-weight:600; color: var(--accent);
+.qf-opt-txt { flex:1; min-width:0; word-break:break-word; }
+.qf-opt-tags { display:flex; gap:4px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end; }
+.qf-opt-name {
+  font-size: calc(var(--fs)*.62); font-weight:700; letter-spacing:1px;
+  padding:2px 8px; border-radius:999px; white-space:nowrap; line-height:1.5;
+  color: var(--text-mute); background: var(--bg-soft);
 }
+.qf-opt-name.self { color:#fff; background: var(--accent); }
+.qf-opt-name.opp { color: var(--accent); background: var(--accent-soft); }
 .qf-opp {
   margin-top:2px; background: var(--bg-soft); border-radius:14px; padding:14px 16px;
   border:1px solid var(--border); animation: sfStepIn .3s var(--ease);
