@@ -247,6 +247,9 @@ async function init() {
   initOppTime();
 
   matchMedia("(prefers-color-scheme:dark)").addEventListener("change", ()=>{ if(cfg.theme==="system") applyTheme(); });
+
+  /* ⭐ 降级备份检测：延迟到首帧渲染完成后再弹，避免阻塞启动 */
+  setTimeout(tryRestoreBackup, 400);
 }
 
 async function saveAll() {
@@ -262,8 +265,8 @@ async function saveAll() {
         surveys, surveyRecords, stickers
       };
       for (const [k, v] of Object.entries(data)) s.put(v, k);
-      t.oncomplete = () => res();
-      t.onerror = () => res();
+      t.oncomplete = () => { res(); backupDebounced(); };
+      t.onerror = () => { res(); backupDebounced(); };
     } catch { res(); }
   });
 }
@@ -273,6 +276,63 @@ let _saveTimer = null;
 function saveAllDebounced() {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(saveAll, 300);
+}
+
+// ─── localStorage 降级备份 ───
+// IndexedDB 万一损坏/被清空时，用这里冗余的最近聊天记录恢复关键数据。
+// 只备份文本内容（图片/贴纸/画作替换为占位文本），避免撑爆 localStorage。
+const BACKUP_KEY = "cy_moon_backup";
+const BACKUP_MSG_MAX = 200;
+let _backupTimer = null;
+
+function _sanitizeMsgsForBackup(msgs){
+  return msgs.slice(-BACKUP_MSG_MAX).map(m=>{
+    const c = Object.assign({}, m);
+    if(c.image){ c.text = c.text || "[图片消息]"; delete c.image; }
+    if(c.sticker){ c.text = c.text || "[贴纸消息]"; delete c.sticker; delete c.stickerId; }
+    if(c.painter){ c.text = c.text || "[画作消息]"; delete c.painter; delete c.painterSeed; }
+    return c;
+  });
+}
+
+function backupCriticalData(){
+  try {
+    localStorage.setItem(BACKUP_KEY, JSON.stringify({
+      ts: Date.now(),
+      cfg, texts,
+      chats: _sanitizeMsgsForBackup(chats),
+      groupMembers, anniversaries, surveys, surveyRecords
+    }));
+  } catch(e){ /* localStorage 满/不可用：静默忽略 */ }
+}
+function backupDebounced(){ clearTimeout(_backupTimer); _backupTimer = setTimeout(backupCriticalData, 1500); }
+function clearBackup(){ try{ localStorage.removeItem(BACKUP_KEY); }catch(e){} }
+function readBackup(){
+  try{ const raw=localStorage.getItem(BACKUP_KEY); return raw?JSON.parse(raw):null; }catch(e){ return null; }
+}
+
+/* 启动检测：IndexedDB 无聊天数据但存在备份时提示恢复（同一会话只提示一次） */
+function tryRestoreBackup(){
+  if(sessionStorage.getItem("skip_backup_restore")) return;
+  const bk = readBackup();
+  if(!bk || !Array.isArray(bk.chats) || !bk.chats.length) return;
+  if(chats.length) return;
+  const mins = Math.max(1, Math.round((Date.now()-(bk.ts||0))/60000));
+  const when = mins<60 ? `${mins} 分钟前` : `${Math.round(mins/60)} 小时前`;
+  if(!confirm(`检测到 ${when} 的本地备份（${bk.chats.length} 条聊天记录），而聊天数据为空，可能是 IndexedDB 数据丢失。\n是否恢复备份？`)) {
+    sessionStorage.setItem("skip_backup_restore","1");
+    return;
+  }
+  sessionStorage.removeItem("skip_backup_restore");
+  if(bk.cfg) cfg = Object.assign(cfg, bk.cfg);
+  if(bk.texts) texts = Object.assign(texts, bk.texts);
+  if(bk.groupMembers) groupMembers = bk.groupMembers;
+  if(bk.anniversaries) anniversaries = bk.anniversaries;
+  if(bk.surveys) surveys = bk.surveys;
+  if(bk.surveyRecords) surveyRecords = bk.surveyRecords;
+  if(Array.isArray(bk.chats)){ chats = bk.chats; markStatsDirty(); }
+  syncUI(); renderChats();
+  saveAll().then(()=>toast("已从备份恢复"));
 }
 
 // ⭐ 缓存 [data-img] 元素列表，避免每次 syncUI 重新 querySelectorAll
@@ -887,6 +947,13 @@ function bindMosaicLongPress(){ const w=document.getElementById("mosaicWidget");
 // down and rebuilding every bubble each time (which was the cause of the visible
 // "jump"/flash on every send, and needless work on long chats).
 let renderedMsgCount=0, renderedLastDate="";
+/* ⭐ 懒加载窗口：chats 全量在内存，DOM 只渲染 [renderStart, chats.length)，
+   首屏渲染最近 INITIAL_RENDER 条，滚动到顶部时每次再补 LOAD_BATCH 条更早历史 */
+let renderStart = 0;
+const INITIAL_RENDER = 150;
+const LOAD_BATCH = 80;
+let _loadingOlder = false;
+let _lastLoadOlder = 0;
 
 // ⭐ 统计缓存：避免每次打开统计页都对 chats 做 6+ 次全量 filter/forEach
 let _statsCache=null, _statsDirty=true;
@@ -991,7 +1058,7 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   frag.appendChild(_buildMsgRow(m, idx, ctx));
 }
 
-// 全量重建：从最新到最旧分块渲染，第一个 chunk 立刻显示最新消息
+// 窗口化重建：只渲染最近 INITIAL_RENDER 条，从最新到最旧分块渲染，第一个 chunk 立刻显示最新消息
 let _chatRenderInProgress=false;
 function renderChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
@@ -999,15 +1066,17 @@ function renderChats(){
   const ctx=buildChatCtx();
   f.innerHTML="";
   const CHUNK=25, total=chats.length;
+  const startTarget=Math.max(total-INITIAL_RENDER, 0);
+  renderStart=startTarget;
   let cursor=total; /* 从尾部开始，最旧的最先 0，最新的在 N-1 */
   (function renderChunk(){
     const frag=document.createDocumentFragment();
-    const start=Math.max(cursor-CHUNK, 0);
+    const start=Math.max(cursor-CHUNK, startTarget);
     /* 块内从最新→最旧遍历，prepend 到 frag 头部，维持 oldest-top / newest-bottom */
     for(let i=cursor-1;i>=start;i--){
       const m=chats[i];
-      /* 日期分割线：当前消息日期 ≠ 前一条（i-1）日期时插入，同时首条必显 */
-      if(i===0||m.date!==chats[i-1].date){
+      /* 日期分割线：当前消息日期 ≠ 前一条（i-1）日期时插入，同时窗口首条必显 */
+      if(i===startTarget||m.date!==chats[i-1].date){
         const d=document.createElement("div"); d.className="dt-div";
         d.innerHTML=`<span class="dt-text">${escapeHtml(m.date)}</span>`;
         frag.insertBefore(d, frag.firstChild);
@@ -1018,13 +1087,53 @@ function renderChats(){
     /* 整个块 prepend 到 #chatFlow → 旧块在上，新块在下 */
     f.insertBefore(frag, f.firstChild);
     cursor=start;
-    if(cursor>0){ requestAnimationFrame(renderChunk); return; }
+    if(cursor>startTarget){ requestAnimationFrame(renderChunk); return; }
     _chatRenderInProgress=false;
     f.scrollTop=f.scrollHeight;
     renderedMsgCount=total; renderedLastDate=chats[total-1]&&chats[total-1].date||"";
     unreadCount=0; updateScrollBot();
     _flushPendingChatOps(f);
   })();
+}
+
+/* ⭐ 懒加载：滚动到顶部时向前补一批更早的消息，保持视口内容不跳动 */
+function loadOlderChats(){
+  if(_chatRenderInProgress||_loadingOlder||renderStart<=0) return;
+  _loadingOlder=true;
+  try{
+    const f=document.getElementById("chatFlow"); if(!f) return;
+    const ctx=buildChatCtx();
+    const newStart=Math.max(renderStart-LOAD_BATCH, 0);
+    const frag=document.createDocumentFragment();
+    /* lastDateRef 以窗口首条日期为初值：只有日期不同于该值时块内才插入分割线 */
+    let lastDateRef={v: chats[renderStart]&&chats[renderStart].date||""};
+    for(let i=newStart;i<renderStart;i++) buildMsgInto(frag, chats[i], i, ctx, lastDateRef);
+    /* 交界日期相同则移除旧首条分割线，避免重复 */
+    const oldFirst=f.firstElementChild;
+    if(oldFirst&&oldFirst.classList.contains("dt-div")&&chats[renderStart]&&chats[renderStart].date===chats[renderStart-1].date) oldFirst.remove();
+    const prevH=f.scrollHeight;
+    f.insertBefore(frag, f.firstChild);
+    renderStart=newStart;
+    f.scrollTop+=f.scrollHeight-prevH; /* 补偿新增高度，视口内容不跳动 */
+  } finally { _loadingOlder=false; }
+}
+
+/* ⭐ 跳转前补渲染：确保目标消息（可能早于当前窗口）已进入 DOM */
+function renderTo(targetIdx){
+  const f=document.getElementById("chatFlow"); if(!f) return;
+  if(targetIdx>=renderStart) return;
+  const ctx=buildChatCtx();
+  const newStart=Math.max(targetIdx,0);
+  if(newStart>=renderStart) return;
+  const frag=document.createDocumentFragment();
+  let lastDateRef={v: chats[renderStart]&&chats[renderStart].date||""};
+  for(let i=newStart;i<renderStart;i++) buildMsgInto(frag, chats[i], i, ctx, lastDateRef);
+  const oldFirst=f.firstElementChild;
+  if(oldFirst&&oldFirst.classList.contains("dt-div")&&chats[renderStart]&&chats[renderStart].date===chats[renderStart-1].date) oldFirst.remove();
+  const prevH=f.scrollHeight;
+  f.insertBefore(frag, f.firstChild);
+  renderStart=newStart;
+  f.scrollTop+=f.scrollHeight-prevH;
 }
 let _pendingChatOps=null;
 function _flushPendingChatOps(f){
@@ -1160,6 +1269,8 @@ function bindGlobalClose(){
         }
       }
       renderedMsgCount--;
+      /* 若删除的是窗口首条（索引仍指向新首条），防越界 */
+      if(renderStart>chats.length) renderStart=chats.length;
       /* 若删除的是最后一条消息，更新 renderedLastDate */
       if(idx>=renderedMsgCount) renderedLastDate=chats.length?chats[chats.length-1].date||"":"";
     }
@@ -1376,6 +1487,7 @@ window.clearPendingQuote = ()=>{ pendingQuote=null; pendingQuoteFrom=""; documen
 
 function jumpToMsg(t){
   const idx=chats.findIndex(c=>c.text===t); if(idx===-1) return;
+  if(idx<renderStart) renderTo(idx);
   const el=document.getElementById(`msg-row-${idx}`); if(!el) return;
   // 不用 el.scrollIntoView()：它会顺带滚动祖先容器（包括固定定位的外层 viewport），
   // 在部分移动端浏览器上表现为"整个界面往下挪一截"再弹回的抖动。
@@ -1386,7 +1498,20 @@ function jumpToMsg(t){
   el.classList.add("msg-flash"); setTimeout(()=>el.classList.remove("msg-flash"),900);
 }
 
-function bindChatScroll(){ document.getElementById("chatFlow").addEventListener("scroll",()=>{ const f=document.getElementById("chatFlow"); if(f.scrollHeight-f.scrollTop-f.clientHeight<60) unreadCount=0; updateScrollBot(); }); }
+function bindChatScroll(){
+  const f=document.getElementById("chatFlow");
+  let raf=null;
+  f.addEventListener("scroll",()=>{
+    if(raf) return;
+    raf=requestAnimationFrame(()=>{
+      raf=null;
+      /* 滚动到顶部：节流加载更早历史 */
+      if(f.scrollTop<60 && Date.now()-_lastLoadOlder>200){ _lastLoadOlder=Date.now(); loadOlderChats(); }
+      if(f.scrollHeight-f.scrollTop-f.clientHeight<60) unreadCount=0;
+      updateScrollBot();
+    });
+  });
+}
 
 /* ⭐ 新增：事件委托 — 在 #chatFlow 上统一监听所有气泡交互
    替代原来每条气泡绑定 7 个事件监听器的做法（2000 条 = 14000 个监听器 → 只需 4 个） */
@@ -1649,7 +1774,7 @@ function scheduleActive(resume = false){
   }, wait);
 }
 
-window.clearAllChats = async()=>{ if(!confirm("确实要清空？")) return; chats=[]; markStatsDirty(); openTrans=new Set(); await saveAll(); renderChats(); toast("已清空"); };
+window.clearAllChats = async()=>{ if(!confirm("确实要清空？")) return; chats=[]; markStatsDirty(); openTrans=new Set(); renderStart=0; clearBackup(); await saveAll(); renderChats(); toast("已清空"); };
 // ⭐ 存储上限（防无限膨胀）
 const CHAT_MAX = 2000;
 const MAX_STICKERS = 200;
@@ -1661,7 +1786,7 @@ function _addChatMsg(msg) {
   if (chats.length > CHAT_MAX + 500) {
     chats = chats.slice(-CHAT_MAX);
     /* ⭐ 裁剪后 DOM 索引偏移，重置渲染游标让 appendNewChats 自动走 renderChats 全量重建 */
-    renderedMsgCount = 0;
+    renderedMsgCount = 0; renderStart = 0;
     saveAllDebounced();
   }
 }
@@ -1691,6 +1816,12 @@ window.showStorageInfo = async () => {
   html += `<div>⚙ 配置+文案：${(cfgSize/1024).toFixed(0)} KB</div>`;
   if(sounds.length) html += `<div>🔊 音效：<b>${sounds.length} 个</b>（${(soundSize/1024).toFixed(0)} KB）</div>`;
   html += `<div>🎵 TTS缓存：<b>${ttsCount} 条</b></div>`;
+  const backupRaw = localStorage.getItem(BACKUP_KEY);
+  if (backupRaw) {
+    html += `<div>💾 本地备份：<b>${(new Blob([backupRaw]).size/1024).toFixed(1)} KB</b></div>`;
+  } else {
+    html += `<div>💾 本地备份：<b>无</b></div>`;
+  }
   html += '</div>';
   modal('存储用量', html);
 };
@@ -1709,7 +1840,7 @@ window.clearTTSCache = () => {
 // ⭐ 清理旧聊天记录（手动）
 window.trimOldChats = () => {
   if(!confirm(`保留最近 ${CHAT_MAX} 条，删除更早的 ${Math.max(0,chats.length-CHAT_MAX)} 条？`)) return;
-  chats = chats.slice(-CHAT_MAX); markStatsDirty(); saveAll(); renderChats(); toast('已清理');
+  chats = chats.slice(-CHAT_MAX); markStatsDirty(); renderStart = 0; saveAll(); renderChats(); toast('已清理');
 };
 
 // ─── Popup ───
@@ -2365,14 +2496,14 @@ function tally(arr){ const m={}; arr.forEach(t=>{if(!t)return;m[t]=(m[t]||0)+1;}
 
 // ─── Backup ───
 window.openBackup = ()=>{ modal("数据",`<div class="pill-btn-group"><button class="pill-btn" onclick="fullExport()">导出备份</button><button class="pill-btn" onclick="document.getElementById('fpJson').click();closeModal();">导入备份</button></div>`); };
-window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
+window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds,surveys,surveyRecords}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
 function onPickJson(e){
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) {chats=d.chats; markStatsDirty();} if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); renderCarousel(); renderMosaic();  toast("还原完毕"); }catch{ alert("数据损坏"); } };
+  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) {chats=d.chats; markStatsDirty();} if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; if(d.surveys) surveys=d.surveys; if(d.surveyRecords) surveyRecords=d.surveyRecords; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); renderCarousel(); renderMosaic(); renderSurveys(); toast("还原完毕"); }catch{ alert("数据损坏"); } };
   r.readAsText(f);
 }
-window.factoryReset = async()=>{ if(!confirm("确认销毁并重置？")) return; indexedDB.deleteDatabase(DB_NAME); setTimeout(()=>location.reload(),200); };
+window.factoryReset = async()=>{ if(!confirm("确认销毁并重置？")) return; clearBackup(); sessionStorage.removeItem("skip_backup_restore"); indexedDB.deleteDatabase(DB_NAME); setTimeout(()=>location.reload(),200); };
 
 // ─── Modal / Toast ───
 function modal(t,html){ document.getElementById("mTitle").innerText=t; document.getElementById("mBody").innerHTML=html; document.getElementById("modal").classList.add("on"); }
