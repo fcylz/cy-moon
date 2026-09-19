@@ -1007,6 +1007,15 @@
   display: none;
 }
   .lyric .l-tr { font-size:calc(var(--chat-fs)*.85); opacity:.75; font-style:italic; }
+  /* ⭕ 歌词分享提示：「{昵称} 分享了歌词」 */
+  .lyric .l-from {
+    font-size: calc(var(--chat-fs)*.66);
+    color: var(--text-mute);
+    letter-spacing: 1px;
+    opacity: .7;
+    font-style: normal;
+    margin-bottom: 2px;
+  }
   .typing-pure { display:inline-flex; align-items:flex-end; gap:8px; padding:6px 4px; }
   .typing-pure .tip-text { font-size:calc(var(--fs)*.76); color:var(--text-mute); letter-spacing:2px; font-style:italic; }
   .t-wave { display:flex; align-items:center; gap:3px; height:18px; }
@@ -1048,6 +1057,9 @@
   .quote-preview { display:none; background:var(--glass); backdrop-filter:blur(12px); padding:8px 14px; align-items:center; gap:8px; font-size:calc(var(--fs)*.78); color:var(--text-mute); }
   .quote-preview.on { display:flex; }
   .qp-line { width:2px; height:22px; background:var(--text); border-radius:1px; flex-shrink:0; }
+  /* ⭕ 待引用预览里的缩略图（图片 / 表情包） */
+  .qp-thumb { display:none; width:22px; height:22px; object-fit:cover; border-radius:5px; flex-shrink:0; }
+  .qp-thumb.on { display:block; }
   .qp-from { font-size:9px; color:var(--text); letter-spacing:1px; font-weight:600; }
   .qp-info { flex:1; overflow:hidden; display:flex; flex-direction:column; gap:1px; }
   .qp-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -3265,6 +3277,16 @@
   max-width: 180px;
   opacity: .85;
 }
+/* ⭕ 引用行缩略图：被引用的是图片/表情包时直接出小图，不再只有 [图片] 三个字 */
+.quote-line .qthumb {
+  width: 16px;
+  height: 16px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.quote-line .qthumb.round { border-radius: 5px; }
 
 /* â”€â”€â”€ ç¾ŽåŒ–: Dock æ¿€æ´»æ€æ”¹ä¸ºåº•éƒ¨å°åœ†ç‚¹ â”€â”€â”€ */
 .dock-btn { position: relative; }
@@ -4329,4 +4351,59 @@
     width: 460px;
     margin: 0 auto;
   }
+}
+
+/* ⭕ Chat bubble · recommended song card (tappable, plays that track) */
+.song-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 236px;
+  max-width: 80%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--surface-2, #f0f2f5);
+  border: 1px solid var(--border, #e3e6eb);
+  cursor: pointer;
+  transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+}
+.song-card:active { transform: scale(.97); }
+.song-card:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.12); }
+.row.self .song-card { margin-left: auto; }
+
+.song-cover {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(176,76,96,.12);
+  color: #b04c60;
+}
+.song-cover svg { width: 20px; height: 20px; }
+
+.song-info { flex: 1 1 auto; min-width: 0; }
+.song-title {
+  font-size: calc(var(--fs) * 1);
+  font-weight: 600;
+  color: var(--text, #1d2129);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.song-artist {
+  margin-top: 2px;
+  font-size: calc(var(--fs) * .84);
+  color: var(--text-mute, #86909c);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.song-badge {
+  flex: none;
+  font-size: calc(var(--fs) * .78);
+  color: #b04c60;
+  opacity: .85;
 }

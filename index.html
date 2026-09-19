@@ -440,6 +440,7 @@
 
     <div class="quote-preview" id="quotePreview">
       <div class="qp-line"></div>
+      <img class="qp-thumb" id="qpThumb" alt="">
       <div class="qp-info">
         <div class="qp-from" id="qpFrom"></div>
         <div class="qp-text" id="qpText"></div>
@@ -882,10 +883,41 @@
               <span>连句</span>
               <div class="sw" id="sw_sentenceJoin" onclick="cfgToggle('sentenceJoin')"><div class="sw-indicator"></div></div>
             </div>
+            <div class="stoggle-row">
+              <span>随机推荐歌曲</span>
+              <div class="sw" id="sw_songRecOn" onclick="cfgToggle('songRecOn')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>歌词取自曲库</span>
+              <div class="sw" id="sw_lyricFromCloud" onclick="cfgToggle('lyricFromCloud')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>自动繁体译文</span>
+              <div class="sw" id="sw_tradTransOn" onclick="cfgToggle('tradTransOn')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="sinput-row" style="margin-top:6px;">
+              <span class="sinput-label">繁体为主概率</span>
+              <div class="range-pair" style="align-items:center;">
+                <input class="inp sm" type="range" id="transProb" min="0" max="100" step="10" value="50" oninput="document.getElementById('transProbVal').innerText=this.value+'%';cfgSet('transProb',+this.value)" style="width:100%;">
+                <span id="transProbVal" style="min-width:36px;text-align:right;font-size:calc(var(--fs)*.75);color:var(--text-mute);">50%</span>
+              </div>
+            </div>
+            <div class="stoggle-row">
+              <span>繁体为主</span>
+              <div class="sw" id="sw_tradPrimary" onclick="cfgToggle('tradPrimary')"><div class="sw-indicator"></div></div>
+            </div>
+            <div class="stoggle-row">
+              <span>组字（随机造句）</span>
+              <div class="sw" id="sw_recombOn" onclick="cfgToggle('recombOn')"><div class="sw-indicator"></div></div>
+            </div>
           </div>
           <div class="snav-list" style="margin-top:8px;">
             <div class="snav-item" onclick="openSepSettings()">
               <span>连句符号设置</span>
+              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+            <div class="snav-item" onclick="openRecombSettings()">
+              <span>组字设置</span>
               <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
           </div>
@@ -1417,6 +1449,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
+<!-- ⭕ 离线简→繁词典（187KB 静态文件，script 加载不受 file:// 的 fetch 限制） -->
+<script src="s2t-dict.js"></script>
 <script src="app.js"></script>
 <script>
 // Settings tab switcher

@@ -13,6 +13,12 @@ window.DEFAULTS = {
     groupMode:false, chatStyle:1, inputPlaceholder:"", welcomeTitle:"",
     welcomeText:"", timeShowSeconds:false,
     oppTime:"", oppTimeDate:"", oppTimeSetAt:0, oppCustomTime:true,
+    tradTransOn:true, // 彼的简体回复自动生成繁体译文（离线词典，不联网）
+    transProb:50,     // 生成译文的概率（%），100=条条都译；0 等同于关闭
+    tradPrimary:true, // 繁体为主：正文直接显示繁体，简体原文点击才展开（仅对自动生成的译文生效）
+    // ⭕ 组字：Markov 生成(B) + 模板兜底(C)，失败退回原抽卡
+    recombOn:true, recombProb:15, recombOrder:3,
+    recombMin:3, recombMax:30, recombMaxRepeat:3, recombMaxSteps:300,
     musicUrl:"", musicTitle:"", musicArtist:"", musicLrc:"",
     cloudMusicIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-music/main/index.json",
     cloudCardIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-chat/main/Word/word.json",
@@ -31,6 +37,8 @@ customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolar
     stickerOn: false,
     painterOn: false,      // ⭕ 随机画作功能总开关，默认关闭
     painterUrl: "https://fcylz.github.io/cy-painter/pages/index.html",  // ⭕ 直接指真实页面，不经过根目录跳转
+    songRecOn: true,       // ⭕ 彼随机推荐曲库歌曲：位于表情包/画作之后，占剩余份额的 2%
+    lyricFromCloud: true,  // ⭕ 歌词来源跟随曲库：当前播放 > 曲库随机 > 本地歌词库兜底
     avSize: "s",         // 聊天头像大小：s=小 32px, m=中 40px, l=大 48px
   },
   imgs: {
@@ -77,6 +85,92 @@ const DB_NAME="SilentChamberDB", DB_VER=11;
 let DB=null, tempTimelineImg="";
 const SEP_POOL=["，","。","！","…","？","～"];
 const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开放给用户调节
+
+/* ⭕ 引用相关可调常量 */
+const QUOTE_CHANCE=0.30; // 彼回复时携带引用的概率
+const QUOTE_RANGE=10;    // 引用候选范围：最近 N 条（用户消息 + 彼发过的歌词）
+
+/* ⭕ 稳定消息 ID：不再依赖 chats 下标，删除/裁剪历史也不会让引用串位 */
+let _midSeq=0;
+function _genMid(){ _midSeq=(_midSeq+1)%1000000; return "m"+Date.now().toString(36)+"-"+_midSeq.toString(36); }
+/** 一次性迁移：给没有 mid 的老聊天数据补上（幂等） */
+function _migrateChatsMid(){
+  let dirty=false;
+  for(const m of chats){ if(m && !m.mid){ m.mid=_genMid(); dirty=true; } }
+  return dirty;
+}
+/** 消息类型识别：决定引用预览怎么渲染 */
+function _msgKind(m){
+  if(!m) return "text";
+  if(m.sticker) return "sticker";
+  if(m.painter) return "painter";
+  if(m.song)    return "song";
+  if(m.image)   return "image";
+  if(m.lyric)   return "lyric";
+  return "text";
+}
+const QUOTE_LABEL={ text:"", image:"[图片]", sticker:"[表情包]", painter:"[画作]", song:"[歌曲]", lyric:"[歌词]" };
+/** 兼容旧数据：老的 quote 是纯字符串 */
+function getQuoteInfo(q){
+  if(!q) return null;
+  if(typeof q==="string") return { mid:"", from:"", text:q, kind:"text" };
+  return { mid:q.mid||"", from:q.from||"", text:q.text||"", kind:q.kind||"text" };
+}
+/* ─── 简体 → 繁体（离线词典 s2t-dict.js，由 _ensureS2T 首次使用时建索引）───
+   最大正向匹配：从最长 4 字的词开始试，命中即替换；未命中退回单字，都没有就原样保留。
+   只做字形转换，不做地区用词转换。 */
+let _s2tMap=null, _s2tMaxLen=1, _s2tReady=false;
+/* ⭕ 人工校正：OpenCC 原表里少数条目在繁体日常书写中反而不自然或会造成歧义，这里强制覆盖。
+   新增条目直接往这个数组里加即可（长度不超过 4 才会被最大匹配用上）。 */
+const S2T_OVERRIDE=[
+  ["吃","吃"],        // 原表把 吃→喫（于是「吃饭」变「喫飯」），日常繁体仍写作「吃」
+  ["着","著"],        // 原表单字表不含 着→著，词组覆盖不到的地方会漏掉
+  ["皇后","皇后"],    // 无分词时对「皇后的后」无法区分，专名固定不转
+  ["太后","太后"],
+  ["影后","影后"]
+];
+function _ensureS2T(){
+  if(_s2tReady) return _s2tMap;
+  _s2tReady=true;
+  const raw = window.S2T_DICT;
+  if(!raw){ console.warn("[s2t] 词典未加载"); return null; }
+  _s2tMap=new Map(); _s2tMaxLen=1;
+  for(const line of raw.split("\n")){
+    if(!line) continue;
+    const sp=line.indexOf(" ");
+    if(sp<1) continue;
+    const k=line.slice(0,sp), v=line.slice(sp+1);
+    if(!k||!v) continue;
+    if(!_s2tMap.has(k)){ _s2tMap.set(k,v); if(k.length>_s2tMaxLen) _s2tMaxLen=k.length; }
+  }
+  /* 校正层放最后：无条件覆盖，优先级高于词表本身 */
+  for(const kv of S2T_OVERRIDE){
+    const k=kv[0], v=kv[1];
+    _s2tMap.set(k,v);
+    if(k.length>_s2tMaxLen) _s2tMaxLen=k.length;
+  }
+  return _s2tMap;
+}
+function s2t(s){
+  if(!s) return s;
+  const M=_ensureS2T(); if(!M) return s;
+  const n=s.length; let out="", i=0;
+  while(i<n){
+    let hit=null;
+    for(let L=Math.min(_s2tMaxLen, n-i); L>=1; L--){
+      const v=M.get(s.substr(i,L));
+      if(v!==undefined){ hit=v; i+=L; break; }
+    }
+    if(hit!==null) out+=hit;
+    else { out+=s[i]; i++; }
+  }
+  return out;
+}
+
+/** 由一条消息构造引用对象 */
+function makeQuote(m){
+  return { mid:m.mid||"", from:m.sender==="self"?(texts.l1_name||"我"):(m.name||texts.opp_name||"对方"), text:m.text||"", kind:_msgKind(m) };
+}
 
 let cfg={}, imgs={}, texts={}, cards=[], chats=[], groupMembers=[], sounds=[], stickers=[];
 let shieldedCats=[], selected=[], foldedCats=[], anniversaries=[], carousel=[];
@@ -220,6 +314,8 @@ async function init() {
     surveys       = b.surveys     || window.DEFAULTS.surveys;
     surveyRecords = b.surveyRecords || [];
     stickers      = b.stickers    || [];
+    /* ⭕ 老数据补 mid（只会在首次升级时写一次） */
+    if(_migrateChatsMid()) saveAllDebounced();
   } catch(e){ console.warn(e); }
 
   document.getElementById("dockL1").innerHTML = DOCK_HTML;
@@ -394,6 +490,10 @@ setSw("sw_showSelfName", cfg.showSelfName);
 setSw("sw_groupMode",   cfg.groupMode);
 setSw("sw_stickerOn",   cfg.stickerOn);
 setSw("sw_painterOn",  cfg.painterOn); // ⭕ 画作开关同步
+setSw("sw_songRecOn",  cfg.songRecOn); // ⭕ 推荐歌曲开关同步
+setSw("sw_lyricFromCloud", cfg.lyricFromCloud); // ⭕ 歌词取自曲库开关同步
+setSw("sw_tradTransOn",  cfg.tradTransOn);      // ⭕ 自动繁体译文开关同步
+setSw("sw_recombOn",    cfg.recombOn);          // ⭕ 组字开关同步
 setSw("sw_hideAesBg",  cfg.hideAesBg);
 setSw("sw_hidePolarBg",cfg.hidePolarBg);
 document.querySelectorAll(".aes-body").forEach(el => el.classList.toggle("hide-bg", !!cfg.hideAesBg));
@@ -434,6 +534,11 @@ document.querySelectorAll(".stheme-opt[data-theme]").forEach(el =>
   if (rpEl) rpEl.value = cfg.replyProb ?? 60;
   const rpVal = document.getElementById("replyProbVal");
   if (rpVal) rpVal.innerText = (cfg.replyProb ?? 60) + "%";
+  const tpEl = document.getElementById("transProb");
+  if (tpEl) tpEl.value = (typeof cfg.transProb==="number"?cfg.transProb:50);
+  const tpVal = document.getElementById("transProbVal");
+  if (tpVal) tpVal.innerText = (typeof cfg.transProb==="number"?cfg.transProb:50) + "%";
+  setSw("sw_tradPrimary", cfg.tradPrimary!==false);
   const muEl = document.getElementById("cfg_musicUrl");
   if(muEl) muEl.value = cfg.musicUrl || "";
   // sync active sound display
@@ -661,7 +766,8 @@ async function onPickImg(e){
     const r = await _compressImg(f, 400, 0.65);
     if(!r) return;
     const now=new Date();
-    _addChatMsg({sender:"self",text:"[图片]",image:r.data,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime()});
+    _addChatMsg({sender:"self",text:"[图片]",image:r.data,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),...(pendingQuote?{quote:pendingQuote}:{})});
+    window.clearPendingQuote();
     saveAllDebounced(); appendNewChats();
     const cf=document.getElementById("chatFlow"); if(cf) cf.scrollTop=cf.scrollHeight;
     if(cfg.soundOn) playSoundById(cfg.activeSoundId||"__builtin_thud1__");
@@ -1000,10 +1106,37 @@ function buildChatCtx(){
 
 // 只构建消息 DOM 行，不附加到父节点（由调用方决定插入方式）。
 // 返回创建的 DOM 元素（普通消息为 div.row，歌词为 div.row.lyric）。
+/* ─── 引用行渲染 ───
+   quote 现在是 {mid, from, text, kind}；老数据是纯字符串，由 getQuoteInfo 降级处理。
+   预览内容按被引用消息的真实类型生成：图片/表情包出缩略图，歌曲出 ♪ 歌名，其余出文本。
+   被引用消息已被删除时降级为兜底文本并标注「（已删除）」。 */
+function quoteLineHtml(q){
+  const qi=getQuoteInfo(q); if(!qi) return "";
+  const tgt = qi.mid ? chats.find(c=>c.mid===qi.mid) : null;
+  const kind = tgt ? _msgKind(tgt) : (qi.kind||"text");
+  let thumb="", txt="";
+  if(tgt){
+    if(kind==="image")       { thumb=`<img class="qthumb" src="${escapeHtml(tgt.image)}" alt="" onerror="this.style.display='none'">`; txt="[图片]"; }
+    else if(kind==="sticker"){ thumb=`<img class="qthumb round" src="${escapeHtml(resolveStickerSrc(tgt.stickerId))}" alt="" onerror="this.style.display='none'">`; txt="[表情包]"; }
+    else if(kind==="painter"){ txt="[画作]"; }
+    else if(kind==="song")   { txt="♪ "+(tgt.songName||"未知曲目"); }
+    else if(kind==="lyric")  { txt=tgt.text||"[歌词]"; }
+    else                     { txt=tgt.text||""; }
+  }else{
+    /* 原消息不见了：用快照兜底 */
+    txt = (kind==="song"&&qi.text) ? "♪ "+qi.text : (qi.text || QUOTE_LABEL[kind] || "");
+    if(txt) txt += "（已删除）";
+  }
+  if(!txt && !thumb) return "";
+  return `<div class="quote-line" data-mid="${escapeHtml(qi.mid)}" data-jump="${escapeHtml(qi.text)}"><div class="qarm"></div>${thumb}<div class="qtxt">${escapeHtml(txt)}</div></div>`;
+}
+
 function _buildMsgRow(m, idx, ctx){
   if(m.lyric){
     const row=document.createElement("div"); row.className="row lyric"; row.id=`msg-row-${idx}`;
-    row.innerHTML=`<div class="l-c"><div class="l-line">${escapeHtml(m.text)}</div>${m.translation?`<span class="l-tr">${escapeHtml(m.translation)}</span>`:""}</div>`;
+    /* ⭕ 分享提示：显示彼的昵称，群聊模式下则是当时的发言成员名 */
+    const who=escapeHtml(m.name||texts.opp_name||"对方");
+    row.innerHTML=`<div class="l-c"><div class="l-from">${who} 分享了歌词</div><div class="l-line">${escapeHtml(m.text)}</div>${m.translation?`<span class="l-tr">${escapeHtml(m.translation)}</span>`:""}</div>`;
     return row;
   }
   const isSelf=m.sender==="self";
@@ -1029,7 +1162,13 @@ function _buildMsgRow(m, idx, ctx){
   if(ctx.showRead&&isSelf) rowItems.push(ctx.readTxt);
   if(ctx.showSelfRead&&!isSelf) rowItems.push(ctx.readTxt);
   const stackMetaHtml=rowItems.length?`<div class="row-meta">${rowItems.join(" · ")}</div>`:"";
-  const quoteHtml=m.quote?`<div class="quote-line" data-jump="${escapeHtml(m.quote)}"><div class="qarm"></div><div class="qtxt">${escapeHtml(m.quote)}</div></div>`:"";
+  const quoteHtml=quoteLineHtml(m.quote);
+  /* ⭕ 繁体为主：这条消息的繁体是自动转换器生成的（tradAuto）时，正文直接显示繁体，
+     简体原文退到点击才展开的那一行。只作用于自动生成的译文 —— 用户手写的译文（如英文）
+     不能当正文，所以必须靠 tradAuto 标记区分开。歌词走 .l-tr，不受影响。 */
+  const tradPrimary = !!(cfg.tradPrimary!==false && m.tradAuto && m.translation);
+  const mainText = tradPrimary ? m.translation : m.text;
+  const subText  = tradPrimary ? m.text : m.translation;
   const transClass=openTrans.has(idx)?"show":"";
   const bodyHtml = m.sticker
     ? `<img class="sticker-msg clickable-media" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.src='${window.DEFAULTS.PH_SVG}'">`
@@ -1040,8 +1179,18 @@ function _buildMsgRow(m, idx, ctx){
     : m.painter
     /* ⭕ click 透传 seed → 弹窗复用同一个 iframe（同源 URL，无需额外请求/存储） */
     ? `<div class="painter-frame-wrap" data-painter-seed="${escapeHtml(m.painterSeed||'0')}" onclick="window._openPainterModal(this.dataset.painterSeed)"><iframe class="painter-frame" sandbox="allow-scripts allow-same-origin" src="${escapeHtml(cfg.painterUrl)}?seed=${escapeHtml(m.painterSeed||'0')}&auto=1&embed=1&mode=chat" loading="lazy"></iframe></div>`
-    : `<div class="bubble message ${isSelf?"message-sent":"message-received"}" data-idx="${idx}">${escapeHtml(m.text).replace(/\n/g,"<br>")}</div>
-      ${m.translation?`<div class="bubble-translation ${transClass}" id="trans-${idx}">${escapeHtml(m.translation)}</div>`:""}`;
+    /* ⭕ 推荐歌曲卡片：封面音符 + 歌名/歌手 + 播放标记，点击立即播放这一首 */
+    : m.song
+    ? `<div class="song-card" data-idx="${idx}" onclick="window.playMsgSong(${idx})">
+         <div class="song-cover"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+         <div class="song-info">
+           <div class="song-title">${escapeHtml(m.songName||"未知曲目")}</div>
+           <div class="song-artist">${escapeHtml(m.songArtist||"—")}</div>
+         </div>
+         <div class="song-badge">${m.songUrl?"立即播放":"无音源"}</div>
+       </div>`
+    : `<div class="bubble message ${isSelf?"message-sent":"message-received"}" data-idx="${idx}">${escapeHtml(mainText).replace(/\n/g,"<br>")}</div>
+      ${subText?`<div class="bubble-translation ${transClass}" id="trans-${idx}">${escapeHtml(subText)}</div>`:""}`;
   row.innerHTML=`
     ${ctx.showAv?`<div class="av-col"><img class="av" src="${av}" loading="lazy" decoding="async">${avMetaHtml}</div>`:""}
     <div class="stack">
@@ -1239,9 +1388,8 @@ function bindGlobalClose(){
   document.getElementById("ctxQuote").addEventListener("click",e=>{
     e.stopPropagation(); if(ctxTargetIdx<0) return;
     const m=chats[ctxTargetIdx];
-    pendingQuote=m.text; pendingQuoteFrom=m.sender==="self"?(texts.l1_name||"我"):(m.name||texts.opp_name||"对方");
-    document.getElementById("qpFrom").innerText=pendingQuoteFrom; document.getElementById("qpText").innerText=pendingQuote;
-    document.getElementById("quotePreview").classList.add("on"); hideCtxMenu(); getActiveInput()?.focus();
+    pendingQuote=makeQuote(m); pendingQuoteFrom=pendingQuote.from;
+    applyPendingQuoteUI(); hideCtxMenu(); getActiveInput()?.focus();
   });
   document.getElementById("ctxDel").addEventListener("click",async e=>{
     e.stopPropagation(); if(ctxTargetIdx<0) return;
@@ -1483,10 +1631,40 @@ window.confirmAddCardFromMsg = async () => {
   toast("已加入字卡");
 };
 
-window.clearPendingQuote = ()=>{ pendingQuote=null; pendingQuoteFrom=""; document.getElementById("quotePreview").classList.remove("on"); };
+window.clearPendingQuote = ()=>{
+  pendingQuote=null; pendingQuoteFrom="";
+  document.getElementById("quotePreview").classList.remove("on");
+  const tp=document.getElementById("qpThumb"); if(tp){ tp.classList.remove("on"); tp.removeAttribute("src"); }
+};
+/* ⭕ 输入框上方的待引用预览：按类型显示缩略图 + 摘要 */
+function applyPendingQuoteUI(){
+  const wrap=document.getElementById("quotePreview"); if(!wrap) return;
+  const qi=getQuoteInfo(pendingQuote);
+  if(!qi){ window.clearPendingQuote(); return; }
+  const m = qi.mid ? chats.find(c=>c.mid===qi.mid) : null;
+  const kind = m ? _msgKind(m) : (qi.kind||"text");
+  const tp=document.getElementById("qpThumb");
+  let src="", summary=qi.text||"";
+  if(m){
+    if(kind==="image")        { src=m.image; summary="[图片]"; }
+    else if(kind==="sticker") { src=resolveStickerSrc(m.stickerId); summary="[表情包]"; }
+    else if(kind==="painter") { summary="[画作]"; }
+    else if(kind==="song")    { summary="♪ "+(m.songName||"未知曲目"); }
+    else                      { summary=m.text||""; }
+  }else{
+    summary = (kind==="song"&&qi.text) ? "♪ "+qi.text : (qi.text || QUOTE_LABEL[kind] || "");
+  }
+  if(tp){ if(src){ tp.src=src; tp.classList.add("on"); } else { tp.classList.remove("on"); tp.removeAttribute("src"); } }
+  document.getElementById("qpFrom").innerText=qi.from||"";
+  document.getElementById("qpText").innerText=summary;
+  wrap.classList.add("on");
+}
 
-function jumpToMsg(t){
-  const idx=chats.findIndex(c=>c.text===t); if(idx===-1) return;
+/* ⭕ 按稳定 mid 定位；老数据 / 被裁剪时回退到文本匹配 */
+function jumpToMsg(mid, fallbackText){
+  let idx = mid ? chats.findIndex(c=>c.mid===mid) : -1;
+  if(idx===-1 && fallbackText) idx=chats.findIndex(c=>c.text===fallbackText);
+  if(idx===-1) return;
   if(idx<renderStart) renderTo(idx);
   const el=document.getElementById(`msg-row-${idx}`); if(!el) return;
   // 不用 el.scrollIntoView()：它会顺带滚动祖先容器（包括固定定位的外层 viewport），
@@ -1556,7 +1734,7 @@ function bindChatDelegation(){
   cf.addEventListener("click", e => {
     // 引用行跳转
     const ql = e.target.closest(".quote-line");
-    if (ql && ql.dataset.jump) { e.stopPropagation(); jumpToMsg(ql.dataset.jump); return; }
+    if (ql && (ql.dataset.mid || ql.dataset.jump)) { e.stopPropagation(); jumpToMsg(ql.dataset.mid, ql.dataset.jump); return; }
     // 气泡短按 → 翻译切换（排除 sticker）
     if (e.target.closest(".sticker-msg")) return;
     const bubble = e.target.closest(".bubble");
@@ -1676,6 +1854,238 @@ function scheduleReply(){
   replyTimer=setTimeout(()=>{ if(typingNode){typingNode.remove();typingNode=null;} showHomeTypingBar(false); replyTimer=null; document.querySelectorAll('.in-btn.speak,.i2-speak-btn,.i3-send.alt,.i4-send.alt').forEach(b=>b.classList.remove('pending')); fireReply(); },sec*1000);
 }
 
+// ─── 曲库：取歌词与推荐歌曲（不触碰播放队列 _shufflePool）───
+
+/* LRC 元数据行识别：作词/作曲/编曲/歌名 这类都带时间戳，会被 _parseLRC 当成歌词，
+   不过滤彼就会发出「编曲：陈伟伦」「作词：xxx」这种句子。
+   ⚠ 难点是别误杀正常歌词：「吉他」「后期」「专辑」这些词本身完全可能出现在歌词里，
+   所以采取分层判定 —— 只有「行首职务名」或「带冒号 + 职务关键词」才判为元数据。 */
+const LRC_META_HEAD=/^\s*(作词|作辭|作曲|編曲|编曲|製作人|制作人|製作|制作|混音|母帶|母带|後期|后期|監製|监制|出品|發行|发行|統籌|统筹|策劃|策划|企劃|企划|宣發|宣发|歌名|歌詞|歌词|曲目|專輯|专辑|演唱|歌手|原唱|翻唱|和聲|和声|合聲|合声|編寫|编写|版权|版权所有|OP|SP)\s*[:：\s]/i;
+const LRC_META_KEYS=/作词|作辭|作曲|編曲|编曲|製作|制作|混音|錄音|录音|監製|监制|和聲|和声|合聲|合声|吉他|貝斯|贝斯|弦樂|弦乐|母帶|母带|後期|后期|出品|發行|发行|原唱|翻唱|統籌|统筹|推廣|推广|企劃|企划|策劃|策划|宣發|宣发|專輯|专辑|歌名|歌曲名|歌詞|歌词|曲目|演唱|歌手|鼓|鍵盤|键盘|版权|版權|OP|SP|ISRC|MV\b/;
+/** 判断一行是不是元数据（而非歌词正文） */
+function isLyricMetaLine(t){
+  const s=(t||"").trim();
+  if(s.length<2) return true;                                  // 太短，多半是残句/占位
+  if(/^\[[^\]]*\]$/.test(s)) return true;                      // 只剩时间轴的残留行
+  if(LRC_META_HEAD.test(s)) return true;                       // 行首职务/曲名：「作词 张三」「歌名：xxx」
+  if(/[:：]/.test(s) && LRC_META_KEYS.test(s)) return true;    // 带冒号且含职务关键词
+  if(/^(OP|SP|ISRC|MV|OA|OC)\b/i.test(s)) return true;         // 行首行业标记
+  if(/^\s*[^\u4e00-\u9fa5A-Za-z0-9]+\s*$/.test(s)) return true;// 纯符号/空白
+  if(/\bby\s*[:：]/i.test(s)) return true;                     // Music by:
+  if(/(lrc|www\.|https?:|\.com|\.net)/i.test(s)) return true;  // 制作方网址水印
+  return false;
+}
+function _cleanLyricLines(lines){
+  return lines.filter(l=>!isLyricMetaLine(l.text||""));
+}
+
+/* 取某首歌清洗后的歌词行（复用 _lrcTextCache，不写回 song 对象）*/
+async function _lrcLinesFor(song){
+  if(!song || !song.lrc) return [];
+  let txt = "";
+  if(song.lrc.startsWith("http")){
+    txt = _lrcTextCache.get(song.lrc);
+    if(txt === undefined){
+      txt = await _fetchRemoteLrc(song.lrc);
+      if(txt) _lrcTextCache.set(song.lrc, txt);
+    }
+  } else {
+    txt = song.lrc; // 兼容旧索引里已混入的歌词文本
+  }
+  return _cleanLyricLines(_parseLRC(txt));
+}
+
+/* 曲库快照：优先内存 → 网络/localforage 缓存。
+   ⚠ 绝不能调用 _ensureShufflePool()：它会重新洗牌并覆盖播放队列 */
+function _getSongPool(forceRefresh){
+  if(!forceRefresh && cloudSongCache && cloudSongCache.length) return Promise.resolve(cloudSongCache);
+  return fetchCloudIndex(forceRefresh);
+}
+
+/* 三级优先取一句歌词：① 当前正在播放 ② 曲库随机一首 ③ 交回调用方兜底本地歌词库 */
+async function pickCloudLyric(){
+  try{
+    // ① 正在播放且未暂停
+    if(musicAudio && !musicAudio.paused && musicAudio._currentSong){
+      const ls = await _lrcLinesFor(musicAudio._currentSong);
+      if(ls.length) return { text: ls[Math.floor(Math.random()*ls.length)].text, from:"now" };
+    }
+    // ② 曲库随机挑一首（最多试 3 首，避开无歌词的曲）
+    const pool = await _getSongPool();
+    if(pool && pool.length){
+      for(let tries=0; tries<3; tries++){
+        const s = pool[Math.floor(Math.random()*pool.length)];
+        if(!s || !s.lrc) continue;
+        const ls = await _lrcLinesFor(s);
+        if(ls.length) return { text: ls[Math.floor(Math.random()*ls.length)].text, from:"cloud" };
+      }
+    }
+  }catch(e){ /* 网络异常静默降级到本地歌词库 */ }
+  return null;
+}
+
+/* ════════════════════════════════════════════
+   ══ 组字 ══
+   语料 = 非歌词的字卡原句。只在内存里建索引，不在卡片上写任何数据、不改任何字卡。
+   三级降级：Markov 链生成(B) → 模板槽位兜底(C) → 调用方退回原抽卡逻辑
+   ════════════════════════════════════════════ */
+const RECOMB_MIN_SRC=3;    // 最少需要几张可用字卡
+const RECOMB_MIN_CHARS=20; // 最少需要多少个不同的汉字，低于此视为语料太稀
+
+/* C 兜底模板：{w} 会被语料里的真实片段（2-4 字）填充 */
+const RECOMB_TEMPLATES=[
+  "我想{w}{w}",
+  "{w}是{w}的{w}",
+  "听说{w}，就{w}",
+  "如果{w}，那就{w}",
+  "{w}的时候，{w}",
+  "你说{w}，我说{w}",
+  "不是{w}，只是{w}",
+  "等{w}都{w}了",
+  "所有的{w}都{w}",
+  "你知道吗，{w}",
+  "我不{w}，我只是{w}",
+  "{w}以后，{w}"
+];
+const RECOMB_CJK=/[\u4e00-\u9fa5]/;
+
+let _mkCache=null, _mkSig="";
+/** 语料索引按「卡数 + 屏蔽分类 + 屏蔽卡数」做签名缓存，避免每次回复都重建 */
+function _getMarkov(){
+  let shieldedCount=0, totalChars=0;
+  for(const c of cards){ if(c.shielded) shieldedCount++; totalChars+=(c&&c.text?String(c.text).length:0); }
+  /* 总字数也进签名：编辑/替换一张卡（卡数不变）时同样能察觉到变化 */
+  const sig=cards.length+"|"+totalChars+"|"+shieldedCats.join(",")+"|"+shieldedCount;
+  if(_mkCache && _mkSig===sig) return _mkCache;
+  _mkCache=_buildMarkov(); _mkSig=sig;
+  return _mkCache;
+}
+function _buildMarkov(){
+  const idx={ bi:new Map(), tri:new Map(), chars:[], frags:[], segs:[], src:0, bytes:0 };
+  const src=cards.filter(c=>!c.shielded && !shieldedCats.includes(c.cat) && c.cat!=="歌词库");
+  idx.src=src.length;
+  if(src.length<RECOMB_MIN_SRC) return idx;
+  const charSet=new Set();
+  const add=(m,k,v)=>{ let a=m.get(k); if(!a){ a=[]; m.set(k,a); } a.push(v); };
+  for(const card of src){
+    const raw=String(card.text||"");
+    /* 按非汉字切开，子句内部才建链 —— 否则会把两句的接缝当成合法搭配 */
+    for(const seg of raw.split(/[^\u4e00-\u9fa5]+/)){
+      if(seg.length<2) continue;
+      for(const ch of seg){ if(RECOMB_CJK.test(ch)) charSet.add(ch); }
+      idx.bytes+=seg.length;
+      for(let i=0;i+1<seg.length;i++){
+        add(idx.bi, seg[i], seg[i+1]);
+        if(i+2<seg.length) add(idx.tri, seg[i]+seg[i+1], seg[i+2]);
+      }
+      /* 槽位片段池（2~4 字，给模板 C 用）与重组片段池（4~10 字的真实子句，给长句用）。
+         都采用「每子句随机抽 1 段」而不是全量子串，避免内存爆炸。 */
+      const want=Math.min(seg.length, 2+Math.floor(Math.random()*3));
+      if(seg.length>=want) idx.frags.push(seg.substr(Math.floor(Math.random()*(seg.length-want+1)), want));
+      if(seg.length>=4){
+        const L=Math.min(seg.length, 4+Math.floor(Math.random()*7));
+        idx.segs.push(seg.substr(Math.floor(Math.random()*(seg.length-L+1)), L));
+      }
+    }
+  }
+  idx.chars=[...charSet];
+  return idx;
+}
+/** 从候选里挑一个不会让同一 n-gram 出现达到 maxRep 次的字；挑不到返回 null（调用方据此停止） */
+function _pickRecombChar(cand, out, N, maxRep, used){
+  const tries=Math.min(cand.length*3, 30);
+  for(let t=0;t<tries;t++){
+    const ch=cand[Math.floor(Math.random()*cand.length)];
+    if(!ch) continue;
+    const trial=out+ch;
+    if(trial.length<N) return ch;
+    const g=trial.slice(-N);
+    if((used.get(g)||0)+1>=maxRep) continue; // ⭕ 同一 n-gram 达到上限则换一个候选
+    return ch;
+  }
+  return null;
+}
+/* 一次 Markov 游走：走到链条断裂 / 达到单段上限 / 预算耗尽为止，返回这一段 */
+function _markovWalk(M, order, maxRep, budget, segCap, used){
+  let out = M.chars[Math.floor(Math.random()*M.chars.length)];
+  while(true){
+    if(budget.n<=0) return out;                  // ⭕ 时间复杂度硬上限（整句共享预算）
+    budget.n--;
+    if(out.length>=segCap) return out;
+    let cand = (order===3 && out.length>=2) ? M.tri.get(out.slice(-2)) : null;
+    if(!cand || !cand.length) cand = M.bi.get(out[out.length-1]); // 高阶无候选时降级到 bigram
+    if(!cand || !cand.length) return out;
+    const ch=_pickRecombChar(cand, out, order, maxRep, used);
+    if(ch===null) return out;
+    out+=ch;
+    if(out.length>=order){ const g=out.slice(-order); used.set(g,(used.get(g)||0)+1); }
+  }
+}
+/* B：Markov 生成。
+   实测结论：硬把一条链走到长目标会明显崩坏，所以按目标长度分两条路 ——
+     · 短目标：单段 Markov 游走，连贯度最高
+     · 长目标：用「语料里真实存在的子句片段」重组，每段语法都成立，拼起来像摘句 */
+const RECOMB_WALK_CAP=12;  // 超过这个长度就不再硬走单段链
+const RECOMB_MAX_PIECES=4; // 长句最多拼几段
+function _markovSentence(){
+  const M=_getMarkov();
+  if(!M || M.src<RECOMB_MIN_SRC || M.chars.length<RECOMB_MIN_CHARS) return "";
+  const order = (cfg.recombOrder===2)?2:3;
+  const minL = Math.max(1, +(cfg.recombMin||3));
+  const maxL = Math.max(minL, +(cfg.recombMax||30));
+  const maxRep = Math.max(2, +(cfg.recombMaxRepeat||3));
+  const maxSteps = Math.max(20, +(cfg.recombMaxSteps||300));
+  const target = randInt(minL, maxL);
+  const used=new Map();      // ⭕ 重复抑制跨整句共享
+  const budget={n:maxSteps};
+  let out="";
+  if(target<=RECOMB_WALK_CAP){
+    out=_markovWalk(M, order, maxRep, budget, target, used);
+  }else if(M.segs.length){
+    const pieces=Math.min(RECOMB_MAX_PIECES, Math.max(2, Math.round(target/6)));
+    for(let p=0;p<pieces;p++){
+      if(budget.n<=0) break;
+      budget.n--;
+      let frag="";
+      /* 挑一个不违反重复抑制、且不会把整句撑超 maxL 的真实片段 */
+      for(let t=0;t<12;t++){
+        const cand=M.segs[Math.floor(Math.random()*M.segs.length)];
+        if(!cand) break;
+        if(out && out.length+cand.length>maxL) continue;
+        if((used.get(cand)||0)+1>=maxRep) continue;
+        frag=cand; break;
+      }
+      if(!frag) break;
+      out += (out ? (randomSep()||"") : "") + frag;
+      used.set(frag,(used.get(frag)||0)+1);
+      if(out.length>=target) break;
+    }
+  }
+  return out.length>=minL ? out : "";
+}
+/** C：模板 + 真实片段填空。语料够用就能出句，几乎不会有语病 */
+function _tmplSentence(){
+  const M=_getMarkov();
+  if(!M || !M.frags.length) return "";
+  const tpl=RECOMB_TEMPLATES[Math.floor(Math.random()*RECOMB_TEMPLATES.length)];
+  return tpl.replace(/\{w\}/g, ()=> M.frags[Math.floor(Math.random()*M.frags.length)]);
+}
+/** 组字入口：B 失败降级 C，都失败返回 ""（调用方退回原抽卡逻辑） */
+function genRecomb(){
+  if(!cfg.recombOn) return "";
+  let s="";
+  try{ s=_markovSentence(); }catch(e){ s=""; }
+  if(!s){ try{ s=_tmplSentence(); }catch(e){ s=""; } }
+  if(!s) return "";
+  /* 长句按概率在中部插入一个分隔符，读起来不至于一口气到底；已有标点就不再加 */
+  if(s.length>=8 && !/[，。！…？～,.]/.test(s) && Math.random()<0.5){
+    const pos=randInt(4, s.length-4);
+    const sep=randomSep();
+    if(sep) s=s.slice(0,pos)+sep+s.slice(pos);
+  }
+  return s;
+}
+
 async function fireReply(){
   const now=new Date();
   if(cfg.stickerOn){
@@ -1708,14 +2118,49 @@ async function fireReply(){
       return;
     }
   }
+  /* ⭕ 推荐歌曲分支：位于表情包/画作之后，占剩余份额的 2%。
+     与是否正在播放无关 —— 只要曲库可用（init 后 3s 已后台预取）即可触发 */
+  if(cfg.songRecOn && Math.random()<0.02){
+    const sPool=await _getSongPool();
+    if(sPool && sPool.length){
+      const sg=sPool[Math.floor(Math.random()*sPool.length)];
+      if(sg && (sg.mp3||sg.name)){
+        const _sn=_parseCloudSongName(sg.name||"");
+        let nameR=texts.opp_name||"温语", avatarR=imgs.oppAvatar||"", memberIdR="";
+        if(cfg.groupMode&&groupMembers.length){ const mr=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameR=mr.name; avatarR=mr.avatar||window.DEFAULTS.PH_SVG; memberIdR=mr.id; }
+        _addChatMsg({sender:"opp",text:"[歌曲]",song:true,songName:_sn.title||"未知曲目",songArtist:_sn.artist||"",songUrl:sg.mp3||"",songLrc:sg.lrc||"",time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameR,memberId:memberIdR});
+        saveAllDebounced();
+        const tip=`推荐歌曲：${_sn.title||"未知曲目"}`;
+        if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
+        else { if(cfg.popupOn) showPopup(tip,nameR,avatarR); }
+        notify(tip,nameR,avatarR);
+        return;
+      }
+    }
+  }
   const pool=cards.filter(c=>!c.shielded&&!shieldedCats.includes(c.cat));
-  if(!pool.length) return;
   const lyrics=pool.filter(c=>c.cat==="歌词库");
   const norm=pool.filter(c=>c.cat!=="歌词库");
-  let isLyric=false, text="", trans="", fragments=[];
-  if(lyrics.length&&Math.random()<0.06){
-    isLyric=true; const c=lyrics[Math.floor(Math.random()*lyrics.length)]; text=c.text; trans=c.translation||"";
-  } else {
+  let isLyric=false, text="", trans="", fragments=[], recombined=false;
+  /* 歌词 6%：lyricFromCloud 开启时按「当前播放 > 曲库随机」取，都取不到才回退本地歌词库 */
+  if(Math.random()<0.06){
+    const picked = cfg.lyricFromCloud ? await pickCloudLyric() : null;
+    if(picked){ isLyric=true; text=picked.text; trans=""; }
+    else {
+      /* 本地歌词库同样过一层元数据过滤，避免历史混进来的「作词：xxx」被发出去 */
+      const clean=lyrics.filter(c=>!isLyricMetaLine(c.text||""));
+      if(clean.length){ const c=clean[Math.floor(Math.random()*clean.length)]; isLyric=true; text=c.text; trans=c.translation||""; }
+    }
+  }
+  if(!isLyric){
+    if(!pool.length) return;
+    /* ⭕ 组字：在文字分支内部按概率触发，命中且生成成功就跳过抽卡；失败则原样走抽卡 */
+    if(cfg.recombOn && Math.random()*100 < (cfg.recombProb||0)){
+      const gen=genRecomb();
+      if(gen){ text=gen; trans=""; fragments=[gen]; recombined=true; }
+    }
+    if(recombined){ /* 组字成功，跳过下面整段抽卡逻辑 */ }
+    else {
     const src=norm.length?norm:pool;
     const n=Math.min(randInt(1,3),src.length);
     const tmp=[...src], arr=[], transArr=[];
@@ -1733,16 +2178,26 @@ async function fireReply(){
       text=arr[arr.length-1]; trans=transArr[arr.length-1]||"";
     }
     else { text=arr[0]; if(transArr.length) trans=transArr[0]; }
+    }
   }
+  /* ⭕ 引用：放开歌词限制，候选池 = 用户消息 + 彼发过的歌词（最近 QUOTE_RANGE 条），存稳定 mid */
   let quote="";
-  if(!isLyric&&cfg.quoteOn&&Math.random()<0.3){ const my=chats.filter(c=>c.sender==="self").slice(-10); if(my.length) quote=my[Math.floor(Math.random()*my.length)].text; }
+  if(cfg.quoteOn&&Math.random()<QUOTE_CHANCE){
+    const cands=chats.filter(c=>c.sender==="self"||c.lyric).slice(-QUOTE_RANGE);
+    if(cands.length) quote=makeQuote(cands[Math.floor(Math.random()*cands.length)]);
+  }
   let name=texts.opp_name||"温语", avatar=imgs.oppAvatar||"", memberId="";
   if(cfg.groupMode&&groupMembers.length){ const m=groupMembers[Math.floor(Math.random()*groupMembers.length)]; name=m.name; avatar=m.avatar||window.DEFAULTS.PH_SVG; memberId=m.id; }
   _addChatMsg({sender:"opp",text,translation:trans,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),lyric:isLyric,quote,name,memberId,fragments});
   /* ⭐ 改用防抖写入，避免每条消息都完整序列化写入 DB（最大性能瓶颈之一） */
   saveAllDebounced();
   if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
-  else { if(cfg.popupOn) showPopup(text,name,avatar); }
+  else {
+    /* ⭕ 通知跟随「繁体为主」：正文都显示繁体了，弹窗没道理还是简体 */
+    const _last=chats[chats.length-1];
+    const _puText=(_last&&_last.tradAuto&&_last.tradPrimary&&cfg.tradPrimary!==false&&_last.translation)?_last.translation:text;
+    if(cfg.popupOn) showPopup(_puText,name,avatar);
+  }
   notify(text,name,avatar);
   if(cfg.autoTTS && text) playMiniMaxTTS(text);
 }
@@ -1782,6 +2237,22 @@ const MAX_CARDS = 5000;
 const MAX_SOUNDS = 50;
 const MAX_CAROUSEL = 20;
 function _addChatMsg(msg) {
+  /* ⭕ 每条消息落地前必定有稳定 mid */
+  if(!msg.mid) msg.mid=_genMid();
+  /* ⭕ 自动繁体译文：只对彼的文字类消息生效，且不覆盖已有（用户手写的）译文。
+     ⭕ 注意概率的语义：transProb 决定的是「这条消息是否以繁体为正文」，
+        而不是「是否生成译文」—— 译文始终会生成并存档，所以简体为主的那些消息
+        点击后照样能展开繁体。想彻底不要繁体，关掉 tradTransOn 总开关。 */
+  if(msg.sender==="opp" && cfg.tradTransOn && msg.text && !msg.translation
+     && !msg.sticker && !msg.image && !msg.painter && !msg.song){
+    const t=s2t(msg.text);
+    /* tradAuto：这条译文是自动转换来的（而非用户手写），渲染时才知道繁体能否提为正文 */
+    if(t && t!==msg.text){
+      msg.translation=t; msg.tradAuto=true;
+      const _tp=(typeof cfg.transProb==="number")?cfg.transProb:50;
+      if(_tp>0 && Math.random()*100<_tp) msg.tradPrimary=true;
+    }
+  }
   chats.push(msg); markStatsDirty();
   if (chats.length > CHAT_MAX + 500) {
     chats = chats.slice(-CHAT_MAX);
@@ -1914,7 +2385,7 @@ window.doSearchChat = ()=>{
     const from=x.c.sender==="self"?(texts.l1_name||"我"):(x.c.name||texts.opp_name||"对方");
     const hl=escapeHtml(x.c.text).replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"),"gi"),m=>`<mark>${m}</mark>`);
     d.innerHTML=`<div class="from">${escapeHtml(from)} · ${x.c.date||""} ${x.c.time||""}</div>${hl}`;
-    d.addEventListener("click",()=>{ document.getElementById("searchPane").classList.remove("on"); jumpToMsg(x.c.text); });
+    d.addEventListener("click",()=>{ document.getElementById("searchPane").classList.remove("on"); jumpToMsg(x.c.mid, x.c.text); });
     res.appendChild(d);
   });
 };
@@ -2042,9 +2513,9 @@ window.closeCatDd=()=>{ const l=document.getElementById("cat-dd-list"); if(l) l.
 window.pickCat=(cat)=>{ const lbl=document.getElementById("cat-dd-label"); const inp=document.getElementById("m_c"); if(lbl) lbl.textContent=cat; if(inp){ inp.value=cat; inp.style.display="none"; } const dd=document.getElementById("cat-dd"); if(dd) dd.style.display=""; closeCatDd(); };
 window.pickCatNew=()=>{ closeCatDd(); const dd=document.getElementById("cat-dd"); const inp=document.getElementById("m_c"); if(dd) dd.style.display="none"; if(inp){ inp.style.display=""; inp.value=""; inp.focus(); } };
 window.selectAddCat=(el,cat)=>{ document.querySelectorAll(".cat-chip").forEach(c=>c.classList.remove("active")); el.classList.add("active"); const inp=document.getElementById("m_c"); if(inp) inp.value=cat; };
-window.addCardConfirm = async()=>{ const t=document.getElementById("m_t").value.trim(); const tr=document.getElementById("m_tr").value.trim(); const c=document.getElementById("m_c").value.trim()||"未命名"; if(!t) return; if(c==="歌词库"){const lines=t.split("\n").map(l=>l.trim()).filter(l=>l); if(cards.length+lines.length>MAX_CARDS){toast(`字卡已达上限 ${MAX_CARDS} 张`,"warn");return;} lines.forEach((line,i)=>cards.push({id:"c"+Date.now()+i,text:line,translation:tr,cat:c}));}else{if(cards.length>=MAX_CARDS){toast(`字卡已达上限 ${MAX_CARDS} 张`,"warn");return;}cards.push({id:"c"+Date.now(),text:t,translation:tr,cat:c});} await saveAll(); window.renderCards(); closeModal(); };
+window.addCardConfirm = async()=>{ const t=document.getElementById("m_t").value.trim(); const tr=document.getElementById("m_tr").value.trim(); const c=document.getElementById("m_c").value.trim()||"未命名"; if(!t) return; if(c==="歌词库"){const lines=t.split("\n").map(l=>l.trim()).filter(l=>l&&!isLyricMetaLine(l)); if(cards.length+lines.length>MAX_CARDS){toast(`字卡已达上限 ${MAX_CARDS} 张`,"warn");return;} lines.forEach((line,i)=>cards.push({id:"c"+Date.now()+i,text:line,translation:tr,cat:c}));}else{if(cards.length>=MAX_CARDS){toast(`字卡已达上限 ${MAX_CARDS} 张`,"warn");return;}cards.push({id:"c"+Date.now(),text:t,translation:tr,cat:c});} await saveAll(); window.renderCards(); closeModal(); };
 window.openBulkAdd = ()=>{ modal("批量导入",`<div class="fld-tip">【分组名】→ 内容，【翻译】分隔译文</div><textarea class="fld area" id="m_bulk" style="min-height:140px;"></textarea><button class="pill-btn" onclick="bulkAddDo()">导入</button>`); };
-function parseTxtToCards(raw){ let cur="未命名",n=0,out=[]; raw.split("\n").forEach(line=>{ const t=line.trim(); if(!t) return; const mm=t.match(/^【(.+)】$/); if(mm){cur=mm[1].trim();return;} let txt=t,tr=""; if(t.includes("【翻译】")){const p=t.split("【翻译】");txt=p[0].trim();tr=p[1].trim();} out.push({id:"c"+Date.now()+(n++),text:txt,translation:tr,cat:cur}); }); return out; }
+function parseTxtToCards(raw){ let cur="未命名",n=0,out=[]; raw.split("\n").forEach(line=>{ const t=line.trim(); if(!t) return; const mm=t.match(/^【(.+)】$/); if(mm){cur=mm[1].trim();return;} let txt=t,tr=""; if(t.includes("【翻译】")){const p=t.split("【翻译】");txt=p[0].trim();tr=p[1].trim();} if(cur==="歌词库"&&isLyricMetaLine(txt)) return; out.push({id:"c"+Date.now()+(n++),text:txt,translation:tr,cat:cur}); }); return out; }
 async function importWithMergePrompt(newCards){ if(!newCards.length) return;
   modal("导入方式", `<div style="font-size:calc(var(--fs)*.88);color:var(--text-mute);margin-bottom:14px;">共 <b style="color:var(--text)">${newCards.length}</b> 条</div>
     <div class="pill-btn-group" style="flex-direction:column;gap:8px;">
@@ -2257,7 +2728,7 @@ window.stickerPickerNextPage=()=>{const v=stickers.filter(s=>!s.shielded);const 
 window.sendSticker = async id => {
   const s=stickers.find(x=>x.id===id); if(!s) return;
   const now=new Date();
-  _addChatMsg({sender:"self", text:"[表情包]", sticker:true, stickerId:id, time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime()});
+  _addChatMsg({sender:"self", text:"[表情包]", sticker:true, stickerId:id, time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime(),...(pendingQuote?{quote:pendingQuote}:{})});
   window.clearPendingQuote();
   if(cfg.soundOn) playSoundById(cfg.activeSoundId || "__builtin_thud1__");
   if(navigator.vibrate) navigator.vibrate(18);
@@ -3212,6 +3683,54 @@ window.removeSepSymbol = async (i) => {
 };
 
 // ════════════════════════════════════════════
+// ══ 组字设置 ══
+// ════════════════════════════════════════════
+window.openRecombSettings = () => { renderRecombSettings(); };
+
+function renderRecombSettings(){
+  const row=(label,desc,inner)=>`<div class="sinput-row" style="margin-top:10px;flex-direction:column;align-items:stretch;gap:6px;">
+      <span class="sinput-label">${label}${desc?` <span style="opacity:.6;font-size:calc(var(--fs)*.66);">${desc}</span>`:""}</span>
+      ${inner}
+    </div>`;
+  const slide=(id,key,min,max,step,unit)=>`<div class="range-pair" style="align-items:center;">
+        <input class="inp sm" type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${cfg[key]}"
+          oninput="document.getElementById('${id}Val').innerText=this.value+'${unit}';cfgSet('${key}',+this.value)" style="width:100%;">
+        <span id="${id}Val" style="min-width:36px;text-align:right;font-size:calc(var(--fs)*.75);color:var(--text-mute);">${cfg[key]}${unit}</span>
+      </div>`;
+  const stats = (()=>{ try{ const M=_getMarkov();
+    return M.src ? `可用字卡 ${M.src} 张 · 不同汉字 ${M.chars.length} 个 · 语料 ${M.bytes} 字` : `无可用字卡（组字会直接退回抽卡）`;
+  }catch(e){ return "—"; } })();
+  const html = `
+    <div style="font-size:calc(var(--fs)*.72);color:var(--text-mute);margin-bottom:2px;">${stats}</div>
+    ${row("触发占比","文字回复里多大比例走组字", slide("rcProb","recombProb",0,100,5,"%",""))}
+    ${row("链阶","2=更跳脱，3=更像原句", `
+      <div class="tab-switch" id="rcOrderTab" style="margin:0;">
+        <div class="ts-opt ${cfg.recombOrder===2?"active":""}" data-v="2" onclick="window.setRecombOrder(2)">2 阶</div>
+        <div class="ts-opt ${cfg.recombOrder===3?"active":""}" data-v="3" onclick="window.setRecombOrder(3)">3 阶</div>
+      </div>`)}
+    ${row("句长下限","", slide("rcMin","recombMin",1,20,1," 字",""))}
+    ${row("句长上限","", slide("rcMax","recombMax",5,60,1," 字",""))}
+    ${row("重复上限","同一片段在句内出现到第 N 次即禁止", slide("rcRepeat","recombMaxRepeat",2,8,1," 次",""))}
+    ${row("步数上限","造句的时间复杂度天花板，超了就降级", slide("rcSteps","recombMaxSteps",50,800,10," 步",""))}
+    <div style="margin-top:12px;"><button class="pill-btn" onclick="window.previewRecomb()">试生成一句</button></div>
+    <div id="rcPreview" style="margin-top:8px;font-size:calc(var(--chat-fs)*.9);color:var(--text);min-height:20px;"></div>
+  `;
+  modal("组字设置", html);
+}
+window.setRecombOrder = async v => {
+  cfg.recombOrder = +v;
+  await saveAll();
+  document.querySelectorAll("#rcOrderTab .ts-opt").forEach(el => el.classList.toggle("active", +el.dataset.v === v));
+};
+window.previewRecomb = () => {
+  const box = document.getElementById("rcPreview");
+  if (!box) return;
+  _mkCache = null; // 强制重建索引，让参数改动立刻生效
+  const s = genRecomb();
+  box.innerText = s || "生成失败（语料太稀或参数过严），已退回原抽卡逻辑";
+};
+
+// ════════════════════════════════════════════
 // ══ 问卷调查 (Survey) ══
 // ════════════════════════════════════════════
 
@@ -3959,8 +4478,11 @@ function _updateMusicCardUI(song) {
 }
 
 // ─── 播放核心：随机切歌 ───
-async function _playNextRandom() {
-  await _ensureShufflePool();
+// ⭕ forceSong：指定曲目时直接单曲成池，跳过 _ensureShufflePool（它会重新洗牌，
+//    把外部设置的 _shufflePool 覆盖回全曲库 —— 旧版点播指定歌曲因此失效）
+async function _playNextRandom(forceSong) {
+  if (forceSong) { _shufflePool = [forceSong]; _shuffleIdx = -1; }
+  else await _ensureShufflePool();
   if (!_shufflePool.length) { toast("曲库无数据", "warn"); return; }
   _shuffleIdx++;
   if (_shuffleIdx >= _shufflePool.length) {
@@ -4222,12 +4744,26 @@ window.selectCloudSong = async (filteredIdx) => {
   if (window._cmlSongs) renderCloudSongList(window._cmlSongs);
   closeModal();
   toast(`已选择: ${title}`);
-  // 切换当前播放
+  // 切换当前播放（传曲目给 _playNextRandom，避免被 _ensureShufflePool 重新洗牌覆盖）
   if (musicAudio && !musicAudio.paused) {
     musicAudio.pause(); musicAudio = null;
-    _shufflePool = [obj]; _shuffleIdx = -1;
-    _playNextRandom();
+    _playNextRandom(obj);
   }
+};
+
+/* ⭕ 聊天里的推荐歌曲卡片：点击即播这一首（单曲成池，不动原随机队列逻辑） */
+window.playMsgSong = async (idx) => {
+  const m = chats[idx];
+  if (!m || !m.song) return;
+  if (!m.songUrl) { toast("这条推荐没有可用音源", "warn"); return; }
+  const obj = {
+    name: m.songArtist ? `${m.songName||"未知曲目"} - ${m.songArtist}` : (m.songName||"未知曲目"),
+    mp3: m.songUrl,
+    lrc: m.songLrc || ""
+  };
+  if (musicAudio) { musicAudio.pause(); musicAudio = null; }
+  await _playNextRandom(obj);
+  toast("正在播放推荐歌曲");
 };
 
 // ═══ 云端字卡库 ═══
