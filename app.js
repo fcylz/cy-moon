@@ -11,6 +11,7 @@ window.DEFAULTS = {
     showTime:true, showRead:true, showSelfRead:false, showSelfName:false,readText:"",
     customFont:"", customFontCss:"", customBubble:"", customChatCss:"",
     groupMode:false, chatStyle:1, inputPlaceholder:"", welcomeTitle:"",
+    fitHome:true,   // ⭕ 首页「不滚动」：内容整体等比缩放塞进一屏；false = 恢复自然高度可滚动
     welcomeText:"", timeShowSeconds:false,
     oppTime:"", oppTimeDate:"", oppTimeSetAt:0, oppCustomTime:true,
     tradTransOn:true, // 彼的简体回复自动生成繁体译文（离线词典，不联网）
@@ -175,6 +176,8 @@ function makeQuote(m){
 let cfg={}, imgs={}, texts={}, cards=[], chats=[], groupMembers=[], sounds=[], stickers=[];
 let shieldedCats=[], selected=[], foldedCats=[], anniversaries=[], carousel=[];
 let surveys=[], surveyRecords=[], surveyFill=null, editingSurvey=null, editingSurveyIsNew=false;
+/* ⭕ 留言板：{id, who:"self"|"opp", text, ts, quote:{id,who,text}|null, read:bool} */
+let msgs=[];
 let activeTimer=null, replyTimer=null, typingNode=null, currentApp=null;
 let openTrans=new Set(), pendingQuote=null, pendingQuoteFrom="";
 
@@ -298,7 +301,7 @@ async function init() {
     const b = await dbGetBatch([
       ["cfg",{}],["imgs",{}],["texts",{}],["cards",null],["chats",[]],
       ["members",null],["sounds",[]],["shieldedCats",[]],["foldedCats",[]],
-      ["anniversaries",null],["carousel",[]],["surveys",null],["surveyRecords",[]],["stickers",[]]
+      ["anniversaries",null],["carousel",[]],["surveys",null],["surveyRecords",[]],["stickers",[]],["msgs",[]]
     ]);
     cfg           = Object.assign({}, window.DEFAULTS.cfg, b.cfg);
     imgs          = Object.assign({}, window.DEFAULTS.imgs, b.imgs);
@@ -314,6 +317,8 @@ async function init() {
     surveys       = b.surveys     || window.DEFAULTS.surveys;
     surveyRecords = b.surveyRecords || [];
     stickers      = b.stickers    || [];
+    msgs          = b.msgs        || [];
+    normalizeMsgs(); /* ⭕ 老数据（扁平留言）迁成「帖子 + 评论」两层 */
     /* ⭕ 老数据补 mid（只会在首次升级时写一次） */
     if(_migrateChatsMid()) saveAllDebounced();
   } catch(e){ console.warn(e); }
@@ -337,6 +342,7 @@ async function init() {
   renderCarousel();
   renderMosaic();
   renderMembers();
+  fitHomeToScreen(); fitHomeWatch(); /* ⭕ 首页贴合屏幕：不滚动 */
   renderSoundList();
   scheduleActive(true);
   initAnniCard();
@@ -346,6 +352,9 @@ async function init() {
 
   /* ⭐ 降级备份检测：延迟到首帧渲染完成后再弹，避免阻塞启动 */
   setTimeout(tryRestoreBackup, 400);
+  /* ⭕ 留言板：开屏时若彼有新留言就提醒。
+     4.2s 是刻意晚于欢迎页（3s 淡出 + .8s 收尾）—— 否则弹窗会被开屏动画盖住看不见 */
+  setTimeout(checkBoardUnread, 4200);
 }
 
 async function saveAll() {
@@ -358,7 +367,7 @@ async function saveAll() {
         cfg, imgs, texts, cards, chats,
         members: groupMembers, sounds,
         shieldedCats, foldedCats, anniversaries, carousel,
-        surveys, surveyRecords, stickers
+        surveys, surveyRecords, stickers, msgs
       };
       for (const [k, v] of Object.entries(data)) s.put(v, k);
       t.oncomplete = () => { res(); backupDebounced(); };
@@ -378,7 +387,8 @@ function saveAllDebounced() {
 // IndexedDB 万一损坏/被清空时，用这里冗余的最近聊天记录恢复关键数据。
 // 只备份文本内容（图片/贴纸/画作替换为占位文本），避免撑爆 localStorage。
 const BACKUP_KEY = "cy_moon_backup";
-const BACKUP_MSG_MAX = 200;
+const BACKUP_MSG_MAX   = 200;
+const BACKUP_BOARD_MAX = 50;  // ⭕ 应急备份最多带 50 个帖子（各自回复原样带上）
 let _backupTimer = null;
 
 function _sanitizeMsgsForBackup(msgs){
@@ -391,15 +401,30 @@ function _sanitizeMsgsForBackup(msgs){
   });
 }
 
+/* ⭕ 留言板也要进应急备份：只取最近若干个帖子，评论原样带上（都是纯文本） */
+function _sanitizeBoardForBackup(list){
+  return (Array.isArray(list)?list:[]).slice(-BACKUP_BOARD_MAX).map(p=>{
+    if(!p || typeof p!=="object") return null;
+    const c=Object.assign({}, p);
+    if(!Array.isArray(c.comments)) c.comments=[];
+    return c;
+  }).filter(Boolean);
+}
+
 function backupCriticalData(){
+  const base={
+    ts: Date.now(),
+    cfg, texts,
+    chats: _sanitizeMsgsForBackup(chats),
+    groupMembers, anniversaries, surveys, surveyRecords
+  };
   try {
-    localStorage.setItem(BACKUP_KEY, JSON.stringify({
-      ts: Date.now(),
-      cfg, texts,
-      chats: _sanitizeMsgsForBackup(chats),
-      groupMembers, anniversaries, surveys, surveyRecords
-    }));
-  } catch(e){ /* localStorage 满/不可用：静默忽略 */ }
+    localStorage.setItem(BACKUP_KEY, JSON.stringify(Object.assign({}, base, { msgs:_sanitizeBoardForBackup(msgs) })));
+  } catch(e){
+    /* ⭕ 带上留言板可能顶到 localStorage 配额 —— 那就去掉留言板再写一次，
+       宁可丢留言板，也别把聊天这些核心数据一起赔进去 */
+    try{ localStorage.setItem(BACKUP_KEY, JSON.stringify(base)); }catch(e2){}
+  }
 }
 function backupDebounced(){ clearTimeout(_backupTimer); _backupTimer = setTimeout(backupCriticalData, 1500); }
 function clearBackup(){ try{ localStorage.removeItem(BACKUP_KEY); }catch(e){} }
@@ -426,13 +451,49 @@ function tryRestoreBackup(){
   if(bk.anniversaries) anniversaries = bk.anniversaries;
   if(bk.surveys) surveys = bk.surveys;
   if(bk.surveyRecords) surveyRecords = bk.surveyRecords;
+  if(bk.msgs){ msgs = bk.msgs; normalizeMsgs(); }
   if(Array.isArray(bk.chats)){ chats = bk.chats; markStatsDirty(); }
-  syncUI(); renderChats();
+  syncUI(); renderChats(); renderBoard();
   saveAll().then(()=>toast("已从备份恢复"));
 }
 
 // ⭐ 缓存 [data-img] 元素列表，避免每次 syncUI 重新 querySelectorAll
 let _dataImgCache = null;
+
+/* ⭕ 首页「不滚动」：把 .l1/.l2 整体等比缩小，正好塞进一屏。
+   手机上内容本来就是一屏 → k=1，什么都不做；
+   窗口矮（1366×768 只剩 ~640px）或内容变长时才缩。
+   缩到 FIT_HOME_MIN 还装不下，才放行滚动 —— 宁可滚，也不裁掉内容。 */
+const FIT_HOME_MIN = 0.62;
+function fitHomeToScreen(){
+  const on = cfg.fitHome !== false;
+  document.querySelectorAll(".home-scroll").forEach(box=>{
+    const inner = box.firstElementChild;   // .l1 或 .l2
+    if(!inner) return;
+    inner.style.transform = "";            // 先复位，才量得到真实高度
+    if(!on){ box.style.overflowY = ""; return; }
+    const avail = box.clientHeight, need = inner.scrollHeight;
+    if(!avail || !need) return;            // 没在显示的那一套布局是 display:none，量不到
+    if(need <= avail){ box.style.overflowY = "hidden"; return; }
+    let k = avail / need;
+    if(k < FIT_HOME_MIN){ k = FIT_HOME_MIN; box.style.overflowY = "auto"; }
+    else box.style.overflowY = "hidden";
+    inner.style.transform = "scale(" + k.toFixed(4) + ")";
+  });
+}
+/* 内容一变（改文案、换图、字号、窗口大小）就重新贴合。
+   ResizeObserver 只看布局尺寸，transform 不改尺寸，所以不会自触发循环。 */
+let _fitTimer = null, _fitRO = null;
+function fitHomeWatch(){
+  if(typeof ResizeObserver !== "undefined" && !_fitRO){
+    _fitRO = new ResizeObserver(()=>fitHomeToScreen());
+    document.querySelectorAll(".home-scroll > *").forEach(el=>_fitRO.observe(el));
+  }
+  window.addEventListener("resize", ()=>{
+    clearTimeout(_fitTimer); _fitTimer = setTimeout(fitHomeToScreen, 120);
+  });
+}
+
 // ─── syncUI ───
 function syncUI() {
   document.getElementById("vp").setAttribute("data-layout", cfg.layout);
@@ -516,6 +577,10 @@ document.querySelectorAll(".slayout-opt[data-v]").forEach(el =>
 document.querySelectorAll(".stheme-opt[data-theme]").forEach(el =>
   el.classList.toggle("active", el.dataset.theme === cfg.theme)
 );
+/* ⭕ 首页「不滚动」开关 */
+document.getElementById("vp")?.setAttribute("data-fit", cfg.fitHome===false ? "0" : "1");
+setSw("sw_fitHome", cfg.fitHome !== false);
+fitHomeToScreen();
 // 同步数字显示
   const fsD = document.getElementById("fsDisp");
   const cfD = document.getElementById("chatFsDisp");
@@ -1948,9 +2013,53 @@ const RECOMB_TEMPLATES=[
   "所有的{w}都{w}",
   "你知道吗，{w}",
   "我不{w}，我只是{w}",
-  "{w}以后，{w}"
+  "{w}以后，{w}",
+  /* ⭕ 带数字槽位 {n} 的模板 */
+  "等了{n}天，{w}",
+  "第{n}次{w}",
+  "{w}了{n}遍",
+  "{n}年{w}",
+  "还有{n}天就{w}",
+  "{w}{n}次",
+  "过了{n}年才{w}"
 ];
 const RECOMB_CJK=/[\u4e00-\u9fa5]/;
+
+/* ⭕ 数字槽位 {n} 的取值池。
+   刻意不让数字进 Markov 链 —— 链不分词性，把「3」当普通字丢进去只会出「我想2023你」。
+   走模板槽位则天然有语境（等了{n}天 / 第{n}次），不会破坏汉字链的统计。 */
+const RECOMB_NUM_POOL=[
+  "一","二","三","四","五","六","七","八","九","十",
+  "两","半","几",
+  "1","2","3","4","5","6","7","8","9","10","12","24","100"
+];
+
+/* ⭕ 数字槽位 {n}……详见上方模板。模板不再是「Markov 失败才用的兜底」，
+   而是有固定出场概率 —— 否则 B 路径几乎总是成功，{n} 永远轮不到。 */
+const RECOMB_TEMPLATE_RATE=20;   // 组字里有多大比例直接走模板句
+
+/* ⭕ 句首虚词：虚词链是孤岛 —— 虚词字既不在起字池、也不在实词语料里，
+   Markov 游走根本走不进去（实测出现率 0%）。所以改成句首点缀：
+   位置固定在句首，绝不会切在词中间，读起来就是「其实，我在月亮里想起你」。 */
+const RECOMB_LEAD_RATE=30;       // 有多大比例给句子加个句首虚词
+/* 只放能独立起句的连接/语气词。「一直」「从来」这类必须贴着谓语，
+   放句首加逗号会读着别扭（「一直，我在…」），刻意不收。 */
+const RECOMB_LEAD_WORDS=[
+  "其实","不过","还是","也许","终于","忽然","大概","反正",
+  "倒是","好像","说到底","后来","偏偏","总觉得","原来","终究","或许","偶尔"
+];
+
+/* 虚词搭配：只建 bi/tri 链 ——
+     · 不进 chars（免得句子以「的」「了」开头）
+     · 不进 frags/segs（免得模板填空填出一串虚词）
+   字卡语料里本来就含这些字时能强化搭配；字卡没有则退化为纯装饰，
+   真正的虚词补充靠上面的句首点缀。 */
+const RECOMB_FUNC_SEGS=[
+  "其实我一直","不过也就是","好像在哪里","却还是一样","终于还是不","从来都没有",
+  "还是一样的","忽然之间就","也许这就是","我知道你的","你也不会再","只是不太想",
+  "大概是因为","说不上来为","总归是要走","也只好这样","越是想不起","倒不如从来",
+  "后来才明白","又何必再说","算是想通了","反反复复地","一点一点地","慢慢地也就"
+];
 
 let _mkCache=null, _mkSig="";
 /** 语料索引按「卡数 + 屏蔽分类 + 屏蔽卡数」做签名缓存，避免每次回复都重建 */
@@ -1989,6 +2098,13 @@ function _buildMarkov(){
         const L=Math.min(seg.length, 4+Math.floor(Math.random()*7));
         idx.segs.push(seg.substr(Math.floor(Math.random()*(seg.length-L+1)), L));
       }
+    }
+  }
+  /* ⭕ 虚词骨架只建链：不进 charSet（不做起字）、不进 frags/segs（不做填空片段） */
+  for(const seg of RECOMB_FUNC_SEGS){
+    for(let i=0;i+1<seg.length;i++){
+      add(idx.bi, seg[i], seg[i+1]);
+      if(i+2<seg.length) add(idx.tri, seg[i]+seg[i+1], seg[i+2]);
     }
   }
   idx.chars=[...charSet];
@@ -2071,15 +2187,24 @@ function _tmplSentence(){
   const M=_getMarkov();
   if(!M || !M.frags.length) return "";
   const tpl=RECOMB_TEMPLATES[Math.floor(Math.random()*RECOMB_TEMPLATES.length)];
-  return tpl.replace(/\{w\}/g, ()=> M.frags[Math.floor(Math.random()*M.frags.length)]);
+  return tpl
+    .replace(/\{w\}/g, ()=> M.frags[Math.floor(Math.random()*M.frags.length)])
+    .replace(/\{n\}/g, ()=> RECOMB_NUM_POOL[Math.floor(Math.random()*RECOMB_NUM_POOL.length)]);
 }
 /** 组字入口：B 失败降级 C，都失败返回 ""（调用方退回原抽卡逻辑） */
 function genRecomb(){
   if(!cfg.recombOn) return "";
   let s="";
-  try{ s=_markovSentence(); }catch(e){ s=""; }
+  /* ⭕ 数字只来自模板的 {n} 槽位。若等 Markov 失败才用模板，几乎永远轮不到 ——
+     实测 B 路径成功率接近 100%，所以给模板一个固定的出场比例。 */
+  if(Math.random()*100 < RECOMB_TEMPLATE_RATE){ try{ s=_tmplSentence(); }catch(e){ s=""; } }
+  if(!s){ try{ s=_markovSentence(); }catch(e){ s=""; } }
   if(!s){ try{ s=_tmplSentence(); }catch(e){ s=""; } }
   if(!s) return "";
+  /* ⭕ 句首虚词点缀（位置安全，不会切在词中间） */
+  if(s.length>=5 && Math.random()*100 < RECOMB_LEAD_RATE){
+    s = RECOMB_LEAD_WORDS[Math.floor(Math.random()*RECOMB_LEAD_WORDS.length)] + "，" + s;
+  }
   /* 长句按概率在中部插入一个分隔符，读起来不至于一口气到底；已有标点就不再加 */
   if(s.length>=8 && !/[，。！…？～,.]/.test(s) && Math.random()<0.5){
     const pos=randInt(4, s.length-4);
@@ -2970,11 +3095,11 @@ function tally(arr){ const m={}; arr.forEach(t=>{if(!t)return;m[t]=(m[t]||0)+1;}
 
 // ─── Backup ───
 window.openBackup = ()=>{ modal("数据",`<div class="pill-btn-group"><button class="pill-btn" onclick="fullExport()">导出备份</button><button class="pill-btn" onclick="document.getElementById('fpJson').click();closeModal();">导入备份</button></div>`); };
-window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds,surveys,surveyRecords}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
+window.fullExport = ()=>{ const data={cfg,texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds,surveys,surveyRecords,stickers,msgs}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
 function onPickJson(e){
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) {chats=d.chats; markStatsDirty();} if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; if(d.surveys) surveys=d.surveys; if(d.surveyRecords) surveyRecords=d.surveyRecords; await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); renderCarousel(); renderMosaic(); renderSurveys(); toast("还原完毕"); }catch{ alert("数据损坏"); } };
+  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); if(d.cfg) cfg=Object.assign(cfg,d.cfg); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) {chats=d.chats; markStatsDirty();} if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; if(d.surveys) surveys=d.surveys; if(d.surveyRecords) surveyRecords=d.surveyRecords; if(d.stickers) stickers=d.stickers; if(d.msgs){ msgs=d.msgs; normalizeMsgs(); } await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); window.renderStickers(); renderCarousel(); renderMosaic(); renderSurveys(); closeBoardPost(); renderBoard(); toast("还原完毕"); }catch{ alert("数据损坏"); } };
   r.readAsText(f);
 }
 window.factoryReset = async()=>{ if(!confirm("确认销毁并重置？")) return; clearBackup(); sessionStorage.removeItem("skip_backup_restore"); indexedDB.deleteDatabase(DB_NAME); setTimeout(()=>location.reload(),200); };
@@ -3741,6 +3866,9 @@ window.switchStatsTab = function(tab) {
   document.querySelectorAll('#statsApp .stab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('#statsApp .stab-panel').forEach(p => p.classList.toggle('active', p.id === 'sstab-' + tab));
   if (tab === "survey") renderSurveys();
+  /* ⭕ 打开留言板只渲染、不清未读 —— 未读留给「点进帖子」时才消费，
+     否则列表上的红点和开屏提醒就永远没机会出现 */
+  if (tab === "board") renderBoard(); else closeBoardPost();
 };
 
 function renderSurveys(){
@@ -5275,4 +5403,349 @@ window.importSelectedStickers = async () => {
   renderStickers();
   closeModal();
   toast(skipped ? `已导入 ${added} 个（跳过 ${skipped} 个重复）` : `已导入 ${added} 个`);
+};
+
+/* ════════════════════════════════════════════════════════
+   ══ 留言板 (Message Board) ══
+   用户留言的时间戳对标真实时间；彼的留言是「虚拟」的 ——
+   以上一条留言为锚点往后推 1~5 天，并强制严格递增，
+   所以时间线永远连贯，不是随机乱生成。
+   ════════════════════════════════════════════════════════ */
+const BOARD_REPLY_PROB    = 60;  // 用户发帖后，彼在这个帖子里「回复」的概率 %
+const BOARD_REPLY_MIN     = 1;   // 回复条数下限
+const BOARD_REPLY_MAX     = 10;  // 回复条数上限
+const BOARD_OPP_POST_PROB = 30;  // 用户发帖后，彼自己也发一条新帖的概率 %
+const BOARD_QUOTE_CHANCE  = 0.45;// 彼引用别人的话再补充的概率（可引帖子，也可引自己上一条回复）
+const BOARD_FOLD_LEN      = 42;  // 列表页超过这个字数就截断，点进帖子才看全文
+let boardOpenId = null;          // 当前打开的帖子 id（详情页用）
+let boardQuote  = null;          // 用户正在引用的内容 {id, who, text}
+
+/* ⭕ 老数据迁移：旧版留言是一条条平铺的，新版是「帖子 + 评论」两层。
+   把旧数据里带 quote 的「彼的顶层回复」收进它上面那个帖子的 comments，
+   其余保持为帖子 —— 这样升级后老留言不会错位。 */
+function normalizeMsgs(){
+  if(!Array.isArray(msgs)) msgs=[];
+  const out=[];
+  msgs.forEach(m=>{
+    if(!m || typeof m!=="object") return;
+    m.comments = Array.isArray(m.comments) ? m.comments : [];
+    m.text = typeof m.text==="string" ? m.text : "";
+    m.ts   = Number(m.ts) || Date.now();
+    if(m.who==="opp" && m.quote && out.length){
+      const host=out[out.length-1];
+      host.comments.push({id:m.id||("bc"+m.ts), who:"opp", text:m.text, ts:m.ts,
+                          quote:m.quote, read:!!m.read, arriveAt:m.arriveAt});
+    } else out.push(m);
+  });
+  msgs=out;
+}
+
+/* ⭕ 彼的一天只分七个时段 —— 虚拟时间就粗到这个粒度，不再出现具体几点几分。
+   边界按「起始小时」升序排列，24 点即收尾。 */
+const BOARD_DAY_PARTS=[{h:0,n:"凌晨"},{h:5,n:"清晨"},{h:8,n:"早上"},{h:11,n:"中午"},{h:13,n:"下午"},{h:17,n:"傍晚"},{h:19,n:"晚上"}];
+function boardDayPart(h){
+  let n=BOARD_DAY_PARTS[0].n;
+  for(const p of BOARD_DAY_PARTS) if(h>=p.h) n=p.n;
+  return n;
+}
+
+/* ⭕ 时间戳：彼 → 「2026年09月22日 傍晚」；我 → 「2026年09月20日 21时32分」（真实时间） */
+function fmtBoardTime(ts, who){
+  const d=new Date(ts), p=n=>String(n).padStart(2,"0");
+  const date=`${d.getFullYear()}年${p(d.getMonth()+1)}月${p(d.getDate())}日`;
+  return who==="opp"
+    ? `${date} ${boardDayPart(d.getHours())}`
+    : `${date} ${p(d.getHours())}时${p(d.getMinutes())}分`;
+}
+
+/* ⭕ 年月日跟随真实时间轴，只有「时段」是虚拟的。
+   做法：随机抽一个时段落到 anchor 那一天；若该时段已经过去
+   （比如现在是晚上却抽到「早上」），就整体顺延一天 —— 时段保留，日期自然前进。
+   这样既不会跳到几天后，也保证时间永远向前。 */
+function _nextBoardTs(anchor){
+  const prev = anchor || Date.now();
+  const pi = Math.floor(Math.random()*BOARD_DAY_PARTS.length);
+  const end = (BOARD_DAY_PARTS[pi+1] || {h:24}).h;
+  const d = new Date(prev);
+  d.setHours(BOARD_DAY_PARTS[pi].h + Math.floor(Math.random()*Math.max(1,end-BOARD_DAY_PARTS[pi].h)),
+             Math.floor(Math.random()*60), 0, 0);
+  let t = d.getTime();
+  while(t <= prev) t += 86400000;
+  return t;
+}
+/** 帖子里的最后一条时间（没有评论就是帖子本身），给下一条回复当锚点 */
+function _lastTsIn(post){
+  const cs = post.comments||[];
+  return cs.length ? cs[cs.length-1].ts : post.ts;
+}
+/** 彼的内容带 arriveAt（真实时刻），没到点就不显示 —— 彼不会秒回 */
+function _arrived(x, now){ return !x.arriveAt || x.arriveAt <= (now||Date.now()); }
+
+function _boardName(who){ return who==="opp" ? (texts.opp_name||"对方") : (texts.l1_name||"我"); }
+/* ⭕ 群聊模式同步到留言板：「彼」那一侧可能由某个群成员发言，
+   所以名字和头像统一走这两个函数，不再写死 opp_name / oppAvatar */
+function _boardWhoOf(x){
+  if(!x) return texts.opp_name||"对方";
+  if(x.name) return x.name;                       // 群成员名（老数据没有就往下走）
+  return _boardName(x.who||"opp");
+}
+function _boardAvatar(x){
+  if(x && x.memberId){
+    const m=groupMembers.find(g=>g.id===x.memberId);
+    if(m && m.avatar) return m.avatar;
+  }
+  const PH=window.DEFAULTS.PH_SVG;
+  return x && x.who==="opp" ? (imgs.oppAvatar||PH) : (imgs.selfAvatar||PH);
+}
+/* ⭕ 群聊开着就随机挑一个成员当发言人，否则就是彼本人 */
+function _pickBoardOpp(){
+  if(cfg.groupMode && groupMembers.length){
+    const m=groupMembers[Math.floor(Math.random()*groupMembers.length)];
+    return {name:m.name||"", memberId:m.id||""};
+  }
+  return {name:texts.opp_name||"对方", memberId:""};
+}
+
+/** 彼的留言内容：优先组字，其次抽一张非歌词字卡 */
+function _genBoardOppText(){
+  if(cfg.recombOn && Math.random()*100 < (cfg.recombProb||0)){
+    const g=genRecomb(); if(g) return g;
+  }
+  const pool=cards.filter(c=>!c.shielded&&!shieldedCats.includes(c.cat)&&c.cat!=="歌词库");
+  if(pool.length) return pool[Math.floor(Math.random()*pool.length)].text;
+  return "……";
+}
+
+/* ⭕ 列表页：一条留言 = 一条帖子。点卡片是「进帖子」，不是就地展开 ——
+   全文和回复都在详情页里。 */
+function renderBoard(){
+  const list=document.getElementById("boardList"); if(!list) return;
+  const now=Date.now();
+  const vis=msgs.filter(p=>p.who==="self"||_arrived(p,now));
+  if(!vis.length){ list.innerHTML=`<div class="board-empty">还没有人留言<br>写下第一句吧</div>`; return; }
+  list.innerHTML=vis.map((p,i)=>{
+    /* ⭕ 群聊模式下这条可能由某个成员发出，名字和头像都按发言人取 */
+    const nm=_boardWhoOf(p), av=_boardAvatar(p), isOpp=p.who==="opp";
+    const cs=(p.comments||[]).filter(c=>_arrived(c,now));
+    const unread=cs.filter(c=>c.who==="opp"&&!c.read).length;
+    const foldable = p.text.length>BOARD_FOLD_LEN || p.text.includes("\n");
+    return `<div class="board-post${isOpp?" opp":""}${foldable?" foldable":""}" onclick="openBoardPost('${p.id}')">
+      <div class="bp-head">
+        <img class="bp-av" src="${escapeHtml(av)}" alt="">
+        <div class="bp-meta">
+          <div class="bp-name">${escapeHtml(nm)}</div>
+          <div class="bp-time">${fmtBoardTime(p.ts, p.who)}</div>
+        </div>
+        <div class="bp-floor">${i+1}楼</div>
+      </div>
+      <div class="bp-body"><div class="bp-text">${escapeHtml(p.text).replace(/\n/g,"<br>")}</div></div>
+      <div class="bp-foot">
+        <span class="bp-cmt${unread?" hot":""}">${cs.length?cs.length+" 条回复":"还没有人回复"}</span>
+        ${unread?`<span class="bp-dot"></span>`:""}
+        ${foldable?`<span class="bp-more">看全文</span>`:""}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/* ⭕ 进帖子：推上详情覆盖层，同时把这个帖子里的回复标记为已读 */
+window.openBoardPost = id=>{
+  boardOpenId=id; boardQuote=null;
+  markPostRead(id);
+  renderBoardDetail();
+  const d=document.getElementById("boardDetail"); if(d) d.classList.add("open");
+  renderBoard();
+};
+window.closeBoardPost = ()=>{
+  boardOpenId=null; boardQuote=null;
+  const d=document.getElementById("boardDetail"); if(d) d.classList.remove("open");
+  renderBoard();
+};
+
+/* ⭕ 帖子详情：完整正文 + 楼中楼的回复 */
+function renderBoardDetail(){
+  const wrap=document.getElementById("boardDetail"); if(!wrap) return;
+  const p=msgs.find(x=>x.id===boardOpenId);
+  if(!p){ closeBoardPost(); return; }
+  const now=Date.now();
+  /* ⭕ 重绘会重建输入框，先把草稿捞回来 —— 否则一点「引用」输入到一半的话就没了 */
+  const oldBox=document.getElementById("boardCmtInput"), draft=oldBox?oldBox.value:"";
+  const cs=(p.comments||[]).filter(c=>_arrived(c,now));
+  wrap.innerHTML=`
+    <div class="bd-head">
+      <button class="bd-back" onclick="closeBoardPost()">‹ 返回</button>
+      <span class="bd-title">${cs.length?cs.length+" 条回复":"回复"}</span>
+    </div>
+    <div class="bd-scroll">
+      <div class="bd-post">
+        <div class="bp-head">
+          <img class="bp-av" src="${escapeHtml(_boardAvatar(p))}" alt="">
+          <div class="bp-meta">
+            <div class="bp-name">${escapeHtml(_boardWhoOf(p))}</div>
+            <div class="bp-time">${fmtBoardTime(p.ts, p.who)}</div>
+          </div>
+          <div class="bp-floor">楼主</div>
+        </div>
+        <div class="bd-text">${escapeHtml(p.text).replace(/\n/g,"<br>")}</div>
+        <button class="bd-qbtn" onclick="setBoardQuote('${p.id}')">引用这条留言</button>
+      </div>
+      ${cs.length ? `<div class="bd-cmts">${cs.map((c,i)=>{
+        const isOpp=c.who==="opp";
+        const av=_boardAvatar(c);
+        const q=c.quote?`<div class="bc-quote"><span class="bq-who">${escapeHtml(c.quote.who)}：</span>${escapeHtml(c.quote.text)}</div>`:"";
+        return `<div class="bc-item">
+          <img class="bc-av" src="${escapeHtml(av)}" alt="">
+          <div class="bc-main">
+            <div class="bc-top"><span class="bc-name">${escapeHtml(_boardWhoOf(c))}</span><span class="bc-floor">${i+1}楼</span></div>
+            ${q}
+            <div class="bc-text">${escapeHtml(c.text).replace(/\n/g,"<br>")}</div>
+            <div class="bc-foot">
+              <span class="bc-time">${fmtBoardTime(c.ts, c.who)}</span>
+              <button class="bd-qbtn" onclick="setBoardQuote('${c.id}')">引用</button>
+            </div>
+          </div>
+        </div>`;
+      }).join("")}</div>` : `<div class="bd-cmt-empty">还没有人回复<br>说点什么吧</div>`}
+    </div>
+    ${boardQuote?`<div class="bd-qbar">
+      <span class="bd-qbar-t">引用 ${escapeHtml(boardQuote.who)}：${escapeHtml(boardQuote.text)}</span>
+      <button class="bd-qbar-x" onclick="clearBoardQuote()">×</button>
+    </div>`:""}
+    <div class="bd-input">
+      <textarea id="boardCmtInput" rows="1" placeholder="${boardQuote?"接着这句说…":"回复这一条…"}"></textarea>
+      <button class="board-send" onclick="sendBoardComment()">回复</button>
+    </div>`;
+  const box=document.getElementById("boardCmtInput");
+  if(box){ box.value=draft; if(boardQuote) box.focus(); }
+}
+/* ⭕ 用户引用：帖子本身（留言）或某一条回复都行，点「引用」进入引用态 */
+window.setBoardQuote = id=>{
+  const p=msgs.find(x=>x.id===boardOpenId); if(!p) return;
+  /* ⭕ 取完整对象，别只取 who/text —— 群聊下要带上发言成员的名字 */
+  const src = (p.id===id) ? p : ((p.comments||[]).find(x=>x.id===id) || null);
+  if(!src) return;
+  boardQuote={id, who:_boardWhoOf(src), text:src.text};
+  renderBoardDetail();
+  const box=document.getElementById("boardCmtInput"); if(box) box.focus();
+};
+window.clearBoardQuote = ()=>{ boardQuote=null; renderBoardDetail(); };
+
+/** 进帖子 = 把这个帖子里的未读回复消费掉（只消费「已到达」的） */
+function markPostRead(id){
+  const now=Date.now();
+  const p=msgs.find(x=>x.id===id); if(!p) return;
+  let changed=false;
+  (p.comments||[]).forEach(c=>{ if(c.who==="opp"&&!c.read&&_arrived(c,now)){ c.read=true; changed=true; } });
+  if(p.who==="opp"&&!p.read&&_arrived(p,now)){ p.read=true; changed=true; }
+  if(changed) saveAllDebounced();
+}
+/** 全部标记已读（供「已读全部」类操作用；平时打开列表不清未读，否则红点就没了） */
+function markBoardRead(){
+  const now=Date.now();
+  let changed=false;
+  msgs.forEach(p=>{
+    if(p.who==="opp"&&!p.read&&_arrived(p,now)){ p.read=true; changed=true; }
+    (p.comments||[]).forEach(c=>{ if(c.who==="opp"&&!c.read&&_arrived(c,now)){ c.read=true; changed=true; } });
+  });
+  if(changed) saveAllDebounced();
+}
+
+/* ⭕ 发一条留言 = 发一个帖子（用户的帖子用真实时间） */
+window.sendBoardMsg = ()=>{
+  const box=document.getElementById("boardInput"); if(!box) return;
+  const t=box.value.trim(); if(!t) return;
+  const post={id:"bp"+Date.now()+Math.floor(Math.random()*1000), who:"self", text:t, ts:Date.now(), read:true, comments:[]};
+  msgs.push(post);
+  box.value="";
+  renderBoard(); saveAllDebounced();
+  if(Math.random()*100 < BOARD_REPLY_PROB)    scheduleBoardComments(post.id);
+  if(Math.random()*100 < BOARD_OPP_POST_PROB) scheduleBoardOppPost();
+};
+
+/* ⭕ 在某个帖子里回复（真实时间） */
+window.sendBoardComment = ()=>{
+  const box=document.getElementById("boardCmtInput"); if(!box) return;
+  const t=box.value.trim(); if(!t) return;
+  const p=msgs.find(x=>x.id===boardOpenId); if(!p) return;
+  p.comments=p.comments||[];
+  p.comments.push({id:"bc"+Date.now()+Math.floor(Math.random()*1000), who:"self", text:t, ts:Date.now(), quote:boardQuote||null, read:true});
+  boardQuote=null;
+  box.value="";
+  renderBoardDetail(); renderBoard(); saveAllDebounced();
+  /* 我回了之后，彼也可能接着补充 */
+  if(Math.random()*100 < BOARD_REPLY_PROB) scheduleBoardComments(p.id);
+};
+
+/* ⭕ 彼在同一个帖子下回复 1~10 条。
+   虚拟时间以「帖子里最后一条」为锚点；真实到达时刻 arriveAt 逐条拉开，
+   所以彼不会秒回 —— 但回复本体已入库，关掉页面也不会丢。 */
+function scheduleBoardComments(postId){
+  const p=msgs.find(x=>x.id===postId); if(!p) return;
+  const n=randInt(BOARD_REPLY_MIN, BOARD_REPLY_MAX);
+  const now=Date.now();
+  let arrive=now+randInt(15,45)*1000;
+  for(let i=0;i<n;i++){
+    const ts=_nextBoardTs(_lastTsIn(p));
+    /* ⭕ 引用源 = 帖子本身 + 最近 3 条回复 —— 所以既可能回应我，
+       也可能接着自己上一条继续补充 */
+    const pool=[{id:p.id, who:_boardWhoOf(p), text:p.text}]
+      .concat((p.comments||[]).slice(-3).map(c=>({id:c.id, who:_boardWhoOf(c), text:c.text})));
+    let quote=null;
+    if(Math.random()<BOARD_QUOTE_CHANCE){
+      const tgt=pool[Math.floor(Math.random()*pool.length)];
+      quote={id:tgt.id, who:tgt.who, text:tgt.text};
+    }
+    p.comments=p.comments||[];
+    p.comments.push({id:"bc"+ts+Math.floor(Math.random()*1000), who:"opp", text:_genBoardOppText(), ts, quote, read:false, arriveAt:arrive});
+    /* 页面还开着就到点就地刷新；没开着也没关系，下次开屏由 checkBoardUnread 兜住 */
+    setTimeout(()=>{ renderBoard(); if(boardOpenId===postId) renderBoardDetail(); saveAllDebounced(); }, arrive-now+300);
+    arrive += randInt(20,90)*1000;
+  }
+  p.comments.sort((a,b)=>a.ts-b.ts);
+  renderBoard(); if(boardOpenId===postId) renderBoardDetail(); saveAllDebounced();
+}
+
+/* ⭕ 彼自己也发一个新帖 */
+function scheduleBoardOppPost(){
+  const anchor = msgs.length ? msgs[msgs.length-1].ts : Date.now();
+  const ts=_nextBoardTs(anchor);
+  const now=Date.now();
+  const arrive=now+randInt(30,120)*1000;
+  const who=_pickBoardOpp(); /* ⭕ 群聊开着就由某个成员来发帖 */
+  msgs.push({id:"bp"+ts+Math.floor(Math.random()*1000), who:"opp", text:_genBoardOppText(), ts, read:false, arriveAt:arrive, comments:[], name:who.name, memberId:who.memberId});
+  setTimeout(()=>{ renderBoard(); saveAllDebounced(); }, arrive-now+300);
+  renderBoard(); saveAllDebounced();
+}
+
+/** 开屏提醒：彼有新留言（新帖）或新回复（评论）时弹窗 */
+function checkBoardUnread(){
+  const now=Date.now();
+  const unPosts=msgs.filter(p=>p.who==="opp"&&!p.read&&_arrived(p,now));
+  const unCmts=[];
+  msgs.forEach(p=>{
+    (p.comments||[]).forEach(c=>{
+      if(c.who==="opp"&&!c.read&&_arrived(c,now)) unCmts.push({post:p, c});
+    });
+  });
+  if(!unPosts.length && !unCmts.length) return;
+  const last = unCmts.length ? unCmts[unCmts.length-1].c : unPosts[unPosts.length-1];
+  const nm=_boardWhoOf(last); /* ⭕ 群聊下是成员名，不是「对方」 */
+  const desc=[ unPosts.length?`${unPosts.length} 条新留言`:"",
+               unCmts.length?`${unCmts.length} 条新回复`:"" ].filter(Boolean).join(" · ");
+  modal("留言板", `<div class="board-notify">
+    <div class="bn-count">${escapeHtml(nm)} 留下了 ${desc}</div>
+    <div class="bn-preview">${escapeHtml(last.text).slice(0,50)}${last.text.length>50?"…":""}</div>
+    <div class="bn-time">${fmtBoardTime(last.ts,"opp")}</div>
+    <div class="bn-actions">
+      <button class="pill-btn" onclick="openBoardFromNotify()">去看看</button>
+      <button class="pill-btn" onclick="closeModal()">稍后</button>
+    </div>
+  </div>`);
+}
+window.openBoardFromNotify = ()=>{
+  closeModal(); openApp("statsApp"); switchStatsTab("board");
+  /* 优先直接落到「有新回复」的那个帖子，省得用户再找 */
+  const now=Date.now();
+  const p=msgs.find(x=>(x.comments||[]).some(c=>c.who==="opp"&&!c.read&&_arrived(c,now)));
+  if(p) openBoardPost(p.id);
 };

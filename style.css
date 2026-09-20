@@ -4407,3 +4407,354 @@
   color: #b04c60;
   opacity: .85;
 }
+
+/* ════════════════════════════════════════════
+   留言板 (Message Board)
+   ════════════════════════════════════════════ */
+#sstab-board { padding: 0; }
+.board-list {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+.board-list::-webkit-scrollbar { display: none; }
+.board-empty {
+  margin: auto;
+  text-align: center;
+  color: var(--text-mute);
+  font-size: calc(var(--fs)*.85);
+  line-height: 2;
+  letter-spacing: 1px;
+}
+/* ⭕ 帖子卡片（微博/贴吧式）：统一左侧对齐的卡片流，不是左右分边的聊天气泡。
+   磨砂玻璃用 --glass，随主题走，深色模式不用另写一套。 */
+.board-post {
+  width: 100%;
+  background: var(--glass);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px 13px;
+  box-shadow: var(--shadow-s);
+  cursor: pointer;
+  transition: transform .14s var(--ease);
+}
+.board-post:active { transform: scale(.995); }
+.bp-head { display: flex; align-items: center; gap: 9px; }
+.bp-av {
+  width: 32px; height: 32px; border-radius: 50%;
+  object-fit: cover; flex-shrink: 0; background: var(--ph-bg);
+}
+.bp-meta { flex: 1; min-width: 0; }
+.bp-name {
+  font-size: calc(var(--fs)*.88); font-weight: 600;
+  letter-spacing: 1px; line-height: 1.3;
+}
+.bp-time {
+  font-size: calc(var(--fs)*.66); color: var(--text-mute);
+  letter-spacing: .5px; margin-top: 2px; font-variant-numeric: tabular-nums;
+}
+/* 楼层：贴吧味，也是「回复顺序」最直观的标注 */
+.bp-floor {
+  font-size: calc(var(--fs)*.62); color: var(--text-mute);
+  border: 1px solid var(--border); border-radius: 9px;
+  padding: 1px 7px; flex-shrink: 0; opacity: .8;
+  font-variant-numeric: tabular-nums;
+}
+.bp-body { margin-top: 9px; padding-left: 41px; }
+.bp-text {
+  font-size: calc(var(--fs)*.94); line-height: 1.85;
+  letter-spacing: .8px; white-space: pre-wrap; word-break: break-word;
+}
+/* 列表页长帖只露三行 —— 全文在详情页里看 */
+.board-post.foldable .bp-text {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+/* 卡片底部：回复数 / 未读红点 / 看全文 */
+.bp-foot {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 9px; padding-left: 41px;
+  font-size: calc(var(--fs)*.68); color: var(--text-mute); letter-spacing: .5px;
+}
+.bp-cmt { opacity: .8; }
+.bp-cmt.hot { color: var(--accent); opacity: 1; font-weight: 500; }
+.bp-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--accent); box-shadow: 0 0 6px var(--accent-soft);
+}
+.bp-more {
+  margin-left: auto;
+  border: 1px solid var(--border); border-radius: 9px;
+  padding: 1px 7px; opacity: .7; font-size: calc(var(--fs)*.62);
+}
+/* 输入区 */
+.board-input {
+  flex-shrink: 0;
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom,0px));
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.board-input textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 9px 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: calc(var(--fs)*.9);
+  line-height: 1.6;
+  max-height: 96px;
+  outline: none;
+}
+.board-send {
+  flex-shrink: 0;
+  height: 38px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 19px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: calc(var(--fs)*.85);
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: transform .12s var(--ease);
+}
+.board-send:active { transform: scale(.96); }
+/* 开屏提醒弹窗 */
+.board-notify { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.bn-count { font-size: calc(var(--fs)*.95); letter-spacing: 1px; text-align: center; }
+.bn-preview {
+  font-size: calc(var(--fs)*.85); line-height: 1.8; color: var(--text-mute);
+  background: var(--bg-soft); border-radius: 12px; padding: 12px 14px;
+  letter-spacing: .5px;
+}
+.bn-time {
+  font-size: calc(var(--fs)*.7); color: var(--text-mute);
+  text-align: center; letter-spacing: .5px; font-variant-numeric: tabular-nums;
+}
+.bn-actions { display: flex; gap: 10px; }
+.bn-actions .pill-btn { flex: 1; }
+
+/* ⭕ 帖子详情页：盖在列表之上的一层 */
+.board-detail {
+  position: absolute; inset: 0; z-index: 20;
+  display: none; flex-direction: column;
+  background: var(--bg);
+}
+.board-detail.open { display: flex; }
+.bd-head {
+  flex-shrink: 0; height: 46px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 12px; border-bottom: 1px solid var(--border);
+  background: var(--glass);
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+.bd-back {
+  border: none; background: none; cursor: pointer;
+  font-size: calc(var(--fs)*.9); color: var(--text);
+  letter-spacing: 1px; padding: 4px 6px; flex-shrink: 0;
+}
+.bd-title { font-size: calc(var(--fs)*.85); color: var(--text-mute); letter-spacing: 1.5px; }
+.bd-scroll {
+  flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  min-height: 0; padding: 14px 14px 18px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.bd-scroll::-webkit-scrollbar { display: none; }
+/* 楼主正文：整卡片，全文不截断 */
+.bd-post {
+  background: var(--glass);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid var(--border); border-radius: 16px;
+  padding: 13px 15px 15px; box-shadow: var(--shadow-s);
+}
+.bd-text {
+  margin-top: 10px;
+  font-size: calc(var(--fs)*1.02); line-height: 1.95;
+  letter-spacing: 1px; white-space: pre-wrap; word-break: break-word;
+}
+/* 回复列表 */
+.bd-cmts { display: flex; flex-direction: column; gap: 13px; }
+.bd-cmt-empty {
+  text-align: center; color: var(--text-mute);
+  font-size: calc(var(--fs)*.82); line-height: 2.2; letter-spacing: 1px;
+  padding: 18px 0;
+}
+.bc-item { display: flex; gap: 9px; align-items: flex-start; }
+.bc-av {
+  width: 28px; height: 28px; border-radius: 50%;
+  object-fit: cover; flex-shrink: 0; background: var(--ph-bg);
+}
+.bc-main {
+  flex: 1; min-width: 0;
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  border: 1px solid var(--border); border-radius: 14px;
+  padding: 9px 12px 10px; box-shadow: var(--shadow-s);
+}
+.bc-top { display: flex; align-items: baseline; gap: 8px; }
+.bc-name { font-size: calc(var(--fs)*.8); font-weight: 600; letter-spacing: 1px; }
+.bc-floor {
+  font-size: calc(var(--fs)*.6); color: var(--text-mute);
+  opacity: .75; font-variant-numeric: tabular-nums;
+}
+.bc-text {
+  margin-top: 4px;
+  font-size: calc(var(--fs)*.9); line-height: 1.8;
+  letter-spacing: .8px; white-space: pre-wrap; word-break: break-word;
+}
+.bc-time {
+  margin-top: 5px;
+  font-size: calc(var(--fs)*.62); color: var(--text-mute);
+  letter-spacing: .5px; opacity: .85; font-variant-numeric: tabular-nums;
+}
+/* 引用（可引帖子本身，也可引自己上一条作补充） */
+.bc-quote {
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 5px 9px; margin-top: 5px;
+  font-size: calc(var(--fs)*.74); color: var(--text-mute); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bq-who { opacity: .8; margin-right: 2px; }
+/* 详情页的回复输入 */
+.bd-input {
+  flex-shrink: 0;
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom,0px));
+  border-top: 1px solid var(--border); background: var(--bg);
+}
+.bd-input textarea {
+  flex: 1; resize: none;
+  border: 1px solid var(--border); border-radius: 14px;
+  padding: 9px 12px; background: var(--surface); color: var(--text);
+  font-size: calc(var(--fs)*.9); line-height: 1.6;
+  max-height: 96px; outline: none;
+}
+/* ⭕ 引用入口：用户点「引用」就能引留言（帖子）或引某条回复 */
+.bd-qbtn {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-mute);
+  border-radius: 9px;
+  padding: 2px 9px;
+  font-size: calc(var(--fs)*.62);
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: color .16s var(--ease), border-color .16s var(--ease);
+}
+.bd-qbtn:active { color: var(--accent); border-color: var(--accent); }
+.bc-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 5px;
+}
+.bc-foot .bc-time { margin-top: 0; }
+/* 引用态：输入框上方的预览条 */
+.bd-qbar {
+  flex-shrink: 0;
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--accent-soft);
+}
+.bd-qbar-t {
+  flex: 1; min-width: 0;
+  font-size: calc(var(--fs)*.72); line-height: 1.6; color: var(--text-mute);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bd-qbar-x {
+  flex-shrink: 0; border: none; background: none; cursor: pointer;
+  color: var(--text-mute); font-size: calc(var(--fs)*.95); line-height: 1; padding: 2px 4px;
+}
+
+/* ════════════════════════════════════════════
+   ⭕ 电脑端（≥768px）：填满整个窗口，不再是居中的窄竖屏卡片
+   ════════════════════════════════════════════ */
+@media (min-width: 768px) {
+  /* ⭕ 电脑端恢复最初的「居中手机壳」：430 宽 / 94vh / 圆角 32 / 大阴影，
+     壳外是 body 的 #111。不铺满 —— 铺满会把首页卡片和正文拉成一条长带。
+     （≥600px 那条 width:460 会被基础的 max-width:430 截断，所以壳一直是 430）
+     想改回铺满，把下面这行的注释去掉即可：
+  .viewport { max-width:none; width:100%; height:100dvh; border-radius:0; box-shadow:none; }
+  */
+
+  /* 下面这些限宽只在 viewport 被调宽（例如改回铺满）时才起作用；
+     现在壳宽只有 430，四个值都比它大，等于不生效 —— 先留着备用。 */
+  :root {
+    --desk-home:  480px;  /* 首页：刻意贴近手机的 430，卡片不放大，高度才不会超出一屏 */
+    --desk-chat:  680px;  /* 聊天：消息流 + 输入栏 */
+    --desk-panel: 640px;  /* 设置 / 字卡 / 统计 / 成员 / 留言板 */
+    --desk-dock:  520px;  /* 底部 dock */
+  }
+
+  /* 首页 */
+  .l1, .l2 { max-width: var(--desk-home); margin-inline: auto; }
+  /* dock：按钮不再散到屏幕两端 */
+  .dock { max-width: var(--desk-dock); margin-inline: auto; }
+
+  /* 聊天：气泡区用 padding 居中（滚动区仍全宽，滚动条贴边） */
+  .chat-flow {
+    padding-left:  max(14px, calc((100% - var(--desk-chat)) / 2));
+    padding-right: max(14px, calc((100% - var(--desk-chat)) / 2));
+  }
+  .input-style-1, .input-style-2, .input-style-3, .input-style-4 {
+    max-width: var(--desk-chat); margin-inline: auto;
+  }
+
+  /* 各 app 内容列：同样用 padding 居中，滚动条留在屏幕边缘 */
+  .deck, .settings-scroll, .board-list {
+    padding-left:  max(14px, calc((100% - var(--desk-panel)) / 2));
+    padding-right: max(14px, calc((100% - var(--desk-panel)) / 2));
+  }
+  .board-input, .bd-input, .cards-toolbar, .survey-toolbar {
+    max-width: var(--desk-panel); margin-inline: auto;
+  }
+
+  /* ⭕ 桌面端把滚动条显出来：手机端隐藏是对的，电脑上既看不出能滚也没法拖 */
+  .home-scroll::-webkit-scrollbar, .chat-flow::-webkit-scrollbar,
+  .deck::-webkit-scrollbar, .settings-scroll::-webkit-scrollbar,
+  .board-list::-webkit-scrollbar, .bd-scroll::-webkit-scrollbar {
+    display: block; width: 6px;
+  }
+  .home-scroll::-webkit-scrollbar-thumb, .chat-flow::-webkit-scrollbar-thumb,
+  .deck::-webkit-scrollbar-thumb, .settings-scroll::-webkit-scrollbar-thumb,
+  .board-list::-webkit-scrollbar-thumb, .bd-scroll::-webkit-scrollbar-thumb {
+    background: rgba(127,127,127,.3); border-radius: 3px;
+  }
+  .home-scroll::-webkit-scrollbar-thumb:hover, .chat-flow::-webkit-scrollbar-thumb:hover,
+  .deck::-webkit-scrollbar-thumb:hover, .settings-scroll::-webkit-scrollbar-thumb:hover,
+  .board-list::-webkit-scrollbar-thumb:hover, .bd-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(127,127,127,.55);
+  }
+
+  /* ⭕ 鼠标 hover 反馈：手机端靠 :active，桌面补一层 */
+  .dock-btn:hover { background: rgba(127,127,127,.08); }
+  .stab:hover { border-color: var(--text-mute); }
+  .snav-item:hover, .pill-btn:hover { opacity: .82; }
+  .board-post:hover { box-shadow: 0 2px 10px rgba(0,0,0,.08); }
+}
+
+/* ⭕ 电脑矮窗口：浏览器视口常常比手机还矮（1366×768 只剩 ~640px），
+   压掉首页上下留白，争取主页面仍是一屏放下、不用滚 */
+@media (min-width: 768px) and (max-height: 820px) {
+  .home-scroll { padding-top: 8px; padding-bottom: 4px; }
+  .l1 { gap: 8px; }
+  .dock-wrap { padding: 4px 14px 10px; }
+}
+
+/* ⭕ 首页「不滚动」模式：内容由 JS 整体等比缩放塞进一屏（见 fitHomeToScreen）。
+   缩放从顶部中心开始，所以缩小的只有内容，两侧留白、位置居中。 */
+.viewport[data-fit="1"] .home-scroll { overflow-y: hidden; }
+.home-scroll > * { transform-origin: top center; }

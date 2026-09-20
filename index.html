@@ -598,6 +598,7 @@
     <div class="stab-bar">
       <button class="stab active" data-tab="almanac" onclick="switchStatsTab('almanac')">年鉴</button>
       <button class="stab" data-tab="survey" onclick="switchStatsTab('survey')">问卷</button>
+      <button class="stab" data-tab="board" onclick="switchStatsTab('board')">留言板</button>
     </div>
     <div class="stab-panels-wrap">
       <div class="stab-panel active" id="sstab-almanac">
@@ -609,6 +610,14 @@
           <button class="pill-btn" onclick="document.getElementById('fpSurvey').click()">导入</button>
         </div>
         <div class="deck" id="surveyDeck"></div>
+      </div>
+      <div class="stab-panel" id="sstab-board">
+        <div class="board-list" id="boardList"></div>
+        <div class="board-input">
+          <textarea id="boardInput" rows="2" placeholder="发一条留言…"></textarea>
+          <button class="board-send" onclick="sendBoardMsg()">发布</button>
+        </div>
+        <div class="board-detail" id="boardDetail"></div>
       </div>
     </div>
   </div>
@@ -671,6 +680,17 @@
                 <div class="slp-bar medium center"></div>
               </div>
               <span>Ⅱ</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 首页高度 -->
+        <div class="sblock">
+          <div class="sblock-label">首页高度</div>
+          <div class="stoggle-group">
+            <div class="stoggle-row">
+              <span>适应屏幕（不滚动）</span>
+              <div class="sw" id="sw_fitHome" onclick="cfgToggle('fitHome')"><div class="sw-indicator"></div></div>
             </div>
           </div>
         </div>
