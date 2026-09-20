@@ -1861,13 +1861,16 @@ function scheduleReply(){
    ⚠ 难点是别误杀正常歌词：「吉他」「后期」「专辑」这些词本身完全可能出现在歌词里，
    所以采取分层判定 —— 只有「行首职务名」或「带冒号 + 职务关键词」才判为元数据。 */
 const LRC_META_HEAD=/^\s*(作词|作辭|作曲|編曲|编曲|製作人|制作人|製作|制作|混音|母帶|母带|後期|后期|監製|监制|出品|發行|发行|統籌|统筹|策劃|策划|企劃|企划|宣發|宣发|歌名|歌詞|歌词|曲目|專輯|专辑|演唱|歌手|原唱|翻唱|和聲|和声|合聲|合声|編寫|编写|版权|版权所有|OP|SP)\s*[:：\s]/i;
-const LRC_META_KEYS=/作词|作辭|作曲|編曲|编曲|製作|制作|混音|錄音|录音|監製|监制|和聲|和声|合聲|合声|吉他|貝斯|贝斯|弦樂|弦乐|母帶|母带|後期|后期|出品|發行|发行|原唱|翻唱|統籌|统筹|推廣|推广|企劃|企划|策劃|策划|宣發|宣发|專輯|专辑|歌名|歌曲名|歌詞|歌词|曲目|演唱|歌手|鼓|鍵盤|键盘|版权|版權|OP|SP|ISRC|MV\b/;
+const LRC_META_KEYS=/作词|作辭|作曲|編曲|编曲|製作|制作|混音|錄音|录音|監製|监制|和聲|和声|合聲|合声|吉他|貝斯|贝斯|弦樂|弦乐|母帶|母带|後期|后期|出品|發行|发行|原唱|翻唱|統籌|统筹|推廣|推广|企劃|企划|策劃|策划|宣發|宣发|專輯|专辑|歌名|歌曲名|歌詞|歌词|曲目|演唱|歌手|鼓|鍵盤|键盘|版权|版權|OP|SP|ISRC|MV\b|Producer|Arrangement|Arranger|Composer|Lyricist|Recording|Mixing|Mastering|Guitar|Bass|Drum|Keyboard|Vocal|Backing|Chorus|Publisher|Studio|Album|Lyrics|Composed|Engineer/i;
 /** 判断一行是不是元数据（而非歌词正文） */
 function isLyricMetaLine(t){
   const s=(t||"").trim();
   if(s.length<2) return true;                                  // 太短，多半是残句/占位
   if(/^\[[^\]]*\]$/.test(s)) return true;                      // 只剩时间轴的残留行
   if(LRC_META_HEAD.test(s)) return true;                       // 行首职务/曲名：「作词 张三」「歌名：xxx」
+  /* 单字职务名必须限定在行首：`词：` `曲：` `词曲：` `词 Lyricist:`。
+     不能放进 LRC_META_KEYS —— 那会让「他说：曲终人散」这种歌词被误杀 */
+  if(/^(词曲|词|曲)[词曲\s、,，/·&]{0,6}[^\u4e00-\u9fa5]{0,12}[:：]/.test(s)) return true;
   if(/[:：]/.test(s) && LRC_META_KEYS.test(s)) return true;    // 带冒号且含职务关键词
   if(/^(OP|SP|ISRC|MV|OA|OC)\b/i.test(s)) return true;         // 行首行业标记
   if(/^\s*[^\u4e00-\u9fa5A-Za-z0-9]+\s*$/.test(s)) return true;// 纯符号/空白
