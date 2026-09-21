@@ -119,9 +119,18 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.13.1";
+const APP_VERSION = "1.14.0";
 const APP_BUILD   = "2026-09-21";
 const APP_CHANGELOG = [
+  { v:"1.14.0", d:"2026-09-21", items:[
+    "云同步改为「合并式拉取」：按唯一 id 取并集，手机和电脑的新聊天/留言/卡片都保留，不再一边盖一边",
+    "列表类按唯一键合并（聊天 mid / 消息 id / 评论 id / 卡片 id / 表情 id / 成员 id / 问卷 id / 分类字符串）",
+    "单条配置类（话术、设置、纪念日）无法合并，改为按时戳裁决——云端比本机上次推送新才用云端",
+    "留言板支持「同帖评论并集」：两端各回了一条也不会丢",
+    "聊天合并后按时间排回序，并遵守 CHAT_MAX 上限（只留最近那批）",
+    "新增「强制拉取」（云端→本机覆盖），与「强制推送」对称，供需要彻底对齐时使用",
+    "同步出去的设置不再包含本机的 sha 表 / 上次推拉时间（本机私有，外传是 409 的另一个来源）",
+  ]},
   { v:"1.13.1", d:"2026-09-21", items:[
     "云同步新增「强制推送」：忽略云端版本冲突，用本机数据覆盖云端（治误推后的单向死锁）",
     "修正 409 的误导提示：原文只说「请先拉取」，但拉取会反过来把云端数据盖到本机",
@@ -3085,7 +3094,15 @@ function _syncBundles(includeMedia){
   if(includeMedia){ b.imgs=imgs; b.sounds=sounds; b.carousel=carousel; }
   return b;
 }
-function _syncCfgOut(){ const c=Object.assign({},cfg); delete c.syncToken; return c; }
+/* ⭕ 只把"用户设置"同步出去。令牌、以及本机的同步状态（sha 表 / 上次推拉时间）都是
+   **本机私有**的 —— 同步出去等于让另一台设备的同步状态覆盖过来，
+   那是 sha 错乱、以及推送莫名 409 的另一个来源。 */
+function _syncCfgOut(){
+  const c=Object.assign({},cfg);
+  delete c.syncToken; delete c.syncShas;
+  delete c.syncLastPush; delete c.syncLastPull;
+  return c;
+}
 function _stripChatMedia(list){
   return (list||[]).map(m=>{
     const c=Object.assign({},m);
@@ -3111,22 +3128,97 @@ function _syncParts(name,val){
   return [{file:name+".json",text:json}];   // 非数组没法切，只能原样（超限会在推送时报错）
 }
 function _syncStatus(msg){ const el=document.getElementById("syncStatus"); if(el){ el.style.display=""; el.textContent=msg; } }
-function _syncApply(b){
-  if(b.cfg) Object.assign(cfg,b.cfg,{syncToken:cfg.syncToken});   // ⭕ 令牌是本机设置，绝不能被云端覆盖
-  if(b.texts) texts=b.texts;
-  if(b.cards) cards=b.cards;
-  if(b.chats){ chats=b.chats; if(typeof markStatsDirty==="function") markStatsDirty(); }
-  if(b.msgs){ msgs=b.msgs; if(typeof normalizeMsgs==="function") normalizeMsgs(); }
-  if(b.members) groupMembers=b.members;
-  if(b.anniversaries) anniversaries=b.anniversaries;
-  if(b.surveys&&b.surveys.surveys) surveys=b.surveys.surveys;
-  if(b.surveys&&b.surveys.surveyRecords) surveyRecords=b.surveys.surveyRecords;
-  if(b.misc&&b.misc.shieldedCats) shieldedCats=b.misc.shieldedCats;
-  if(b.misc&&b.misc.foldedCats) foldedCats=b.misc.foldedCats;
-  if(b.stickers) stickers=b.stickers;
-  if(b.imgs) imgs=b.imgs;
-  if(b.sounds) sounds=b.sounds;
-  if(b.carousel) carousel=b.carousel;
+/* ─── 合并式拉取 ───
+   原来的 _syncApply 是"整包覆盖"：云端有什么就用什么，本机那份直接丢掉。
+   于是必然出现"手机盖电脑 / 电脑盖手机"，点错一次就毁数据
+   （v1.13.1 修的那个 409 死锁，正是它的后果）。
+   现在两条规则：
+     ① 列表类：**按唯一键取并集**（同键以本机为准）→ 两边的新消息都能留下；
+     ② 单条配置类（texts / cfg / anniversaries）：没法合并，**按时间选较新的一边**。
+   唯一键已逐个核对：chats.mid / msgs.id / 评论.id / cards.id / stickers.id /
+   members.id / surveys.id / surveyRecords.id / carousel.id / sounds.id —— 都稳定且两端一致。 */
+function _mergeByKey(local, remote, keyFn){
+  const out = Array.isArray(local) ? local.slice() : [];
+  const seen = new Set();
+  for(const it of out){ const k=keyFn(it); if(k!=null) seen.add(k); }
+  for(const it of (Array.isArray(remote)?remote:[])){
+    const k=keyFn(it);
+    if(k!=null){ if(seen.has(k)) continue; seen.add(k); }
+    out.push(it);
+  }
+  return out;
+}
+function _mergeStrings(local, remote){
+  const out = Array.isArray(local) ? local.slice() : [];
+  const seen = new Set(out);
+  for(const s of (Array.isArray(remote)?remote:[])){ if(!seen.has(s)){ seen.add(s); out.push(s); } }
+  return out;
+}
+/* 取唯一键；连该字段都没有的脏数据才退化为整条比较 */
+function _keyBy(field){
+  return it => (!it || typeof it!=="object") ? String(it)
+             : (it[field]!=null ? field+"#"+it[field] : "raw#"+JSON.stringify(it));
+}
+const _byId = _keyBy("id");
+const _mergeById = (l,r)=>_mergeByKey(l,r,_byId);
+/* 留言板：帖子按 id 并集，**同一条帖子的评论也要并集**（两端可能各回了一条） */
+function _mergeMsgs(local, remote){
+  const out = _mergeByKey(local, remote, _byId);
+  const byId = new Map();
+  for(const p of out){ if(p && p.id!=null) byId.set(p.id, p); }
+  for(const rp of (Array.isArray(remote)?remote:[])){
+    if(!rp || rp.id==null) continue;
+    const lp = byId.get(rp.id);
+    if(!lp || !Array.isArray(rp.comments) || !rp.comments.length) continue;
+    lp.comments = _mergeByKey(lp.comments, rp.comments, _byId);
+    if(typeof _cmtRealTs==="function") lp.comments.sort((a,b)=>_cmtRealTs(a)-_cmtRealTs(b));
+  }
+  return out;
+}
+/* 聊天记录：并集后按 ts 排回时间序，并遵守 CHAT_MAX 上限（只留最近那批） */
+function _mergeChats(local, remote){
+  let out = _mergeByKey(local, remote, _keyBy("mid"));
+  out.sort((a,b)=>(Number(a&&a.ts)||0)-(Number(b&&b.ts)||0));
+  const cap = (typeof CHAT_MAX==="number" && CHAT_MAX>0) ? CHAT_MAX : 2000;
+  return out.length>cap ? out.slice(-cap) : out;
+}
+
+/* 把云端数据应用到本机。
+   opt.force = 完全覆盖（「强制拉取」）；默认走合并。
+   opt.ts    = 云端那份的时间戳（manifest.ts），用来裁决单条配置类听谁的。 */
+function _syncApply(b, opt){
+  const force = !!(opt && opt.force);
+  const remoteTs = (opt && Number(opt.ts)) || 0;
+  const localTs  = Number(cfg.syncLastPush) || 0;
+  /* 单条配置类听谁的：云端比"本机上次推送时间"新 → 用云端，否则保留本机。 */
+  const cloudNewer = force || remoteTs > localTs;
+  const take = (local, remote, mergeFn) => (force || !mergeFn) ? remote : mergeFn(local, remote);
+
+  if(b.cfg && cloudNewer) Object.assign(cfg, b.cfg, {
+    /* ⭕ 这几项本机私有，任何情况下都不许被云端覆盖 */
+    syncToken:cfg.syncToken, syncShas:cfg.syncShas,
+    syncLastPush:cfg.syncLastPush, syncLastPull:cfg.syncLastPull,
+  });
+  if(b.texts && cloudNewer) texts = b.texts;
+  if(b.anniversaries && cloudNewer) anniversaries = b.anniversaries;
+
+  if(b.chats){ chats = take(chats, b.chats, _mergeChats); if(typeof markStatsDirty==="function") markStatsDirty(); }
+  if(b.msgs){ msgs = take(msgs, b.msgs, _mergeMsgs); if(typeof normalizeMsgs==="function") normalizeMsgs(); }
+  if(b.members) groupMembers = take(groupMembers, b.members, _mergeById);
+  if(b.cards) cards = take(cards, b.cards, _mergeById);
+  if(b.stickers) stickers = take(stickers, b.stickers, _mergeById);
+  if(b.surveys){
+    if(b.surveys.surveys) surveys = take(surveys, b.surveys.surveys, _mergeById);
+    if(b.surveys.surveyRecords) surveyRecords = take(surveyRecords, b.surveys.surveyRecords, _mergeById);
+  }
+  if(b.misc){
+    if(b.misc.shieldedCats) shieldedCats = take(shieldedCats, b.misc.shieldedCats, _mergeStrings);
+    if(b.misc.foldedCats)   foldedCats   = take(foldedCats, b.misc.foldedCats, _mergeStrings);
+  }
+  /* 媒体：默认不同步；真带了就并集 */
+  if(b.imgs && cloudNewer) imgs = b.imgs;
+  if(b.sounds) sounds = take(sounds, b.sounds, _mergeById);
+  if(b.carousel) carousel = take(carousel, b.carousel, _mergeById);
 }
 function _syncRefreshUI(){
   try{ syncUI(); }catch(e){}
@@ -3183,11 +3275,15 @@ window.forcePushSync=async()=>{
   await saveAll();
   return window.pushSync();
 };
-window.pullSync=async(auto)=>{
+/* 拉取分两种：
+   · 默认 = **合并式**：列表类按唯一键取并集，两边新增的内容都保留（见 _syncApply 注释）；
+   · force=true = 整包覆盖（「强制拉取」），云端那份直接替换本机 —— 会丢本机独有内容，必须二次确认。
+   参数 auto 供启动检测/自动流程调用（不弹 toast）。 */
+window.pullSync=async(auto, force)=>{
   if(_syncBusy) return false;
   _syncBusy=true;
   try{
-    _syncStatus("正在拉取…");
+    _syncStatus(force?"正在强制拉取…":"正在合并拉取…");
     const shas=cfg.syncShas||(cfg.syncShas={});
     const mf=await _gh(SYNC_DIR+"index.json","GET");
     const manifest=JSON.parse(_b64d(mf.content));
@@ -3203,17 +3299,26 @@ window.pullSync=async(auto)=>{
       }
       bundle[name]=parts.length>1?parts.flatMap(t=>JSON.parse(t)):JSON.parse(parts[0]);
     }
-    _syncApply(bundle);
+    _syncApply(bundle, {force:!!force, ts:manifest.ts});
     cfg.syncLastPull=Date.now(); await saveAll();
     _syncRefreshUI();
-    _syncStatus(`已拉取 · ${new Date().toLocaleTimeString()}`);
-    if(!auto) toast("已从云端拉取","ok");
+    _syncStatus(`已${force?"强制":""}拉取 · ${new Date().toLocaleTimeString()}`);
+    if(!auto) toast(force?"已用云端覆盖本机":"已合并云端数据","ok");
     return true;
   }catch(e){
     _syncStatus("拉取失败："+e.message);
     if(!auto) toast("拉取失败："+e.message,"warn");
     return false;
   }finally{ _syncBusy=false; }
+};
+/* ⭕ 强制拉取：不做合并，直接用**云端数据**覆盖本机。
+   合并拉取（默认）永远安全，但也因此**没法删东西** —— 云端的删除操作、本机想丢弃的
+   本地内容，合并都表达不出来。要"完全对齐云端"就用这个。
+   ⚠ 本机独有的内容会被丢弃且无法恢复 → 二次确认。 */
+window.forcePullSync=async()=>{
+  if(_syncBusy) return false;
+  if(!confirm("强制拉取：不做合并，直接用【云端数据】覆盖本机。\n\n⚠ 本机独有的内容会被丢弃，且无法恢复。\n\n确定要强制拉取吗？")) return false;
+  return window.pullSync(false, true);
 };
 window.testSync=async()=>{
   if(!cfg.syncToken){ _syncStatus("请先填令牌"); toast("请先填令牌","warn"); return; }
@@ -3234,14 +3339,15 @@ function _scheduleSyncPush(){
   _syncPushTimer=setTimeout(()=>window.pushSync(true),30000);   // ⭕ 攒一攒再推，避免每分钟一个 commit
 }
 /* 启动时检测：云端备份比本机最近一次推送还新，就问一句要不要拉 ——
-   ⭕ 绝不自动覆盖，覆盖本地数据必须是用户明确确认的动作 */
+   ⭕ 默认走**合并**，两边新增内容都保留；要完全对齐云端得手动点「强制拉取」。
+   绝不自动覆盖，覆盖本地数据必须是用户明确确认的动作 */
 async function checkCloudBackup(){
   if(!cfg.syncToken||!cfg.syncRepo) return;
   try{
     const mf=await _gh(SYNC_DIR+"index.json","GET");
     const m=JSON.parse(_b64d(mf.content));
     if(m.ts>(cfg.syncLastPush||0)+60000){
-      if(confirm(`云端有一份 ${new Date(m.ts).toLocaleString()} 的备份，比你本机最近一次推送要新。\n是否拉取覆盖本机数据？`)) window.pullSync(true);
+      if(confirm(`云端有一份 ${new Date(m.ts).toLocaleString()} 的备份，比你本机最近一次推送要新。\n\n是否把它合并到本机？（本机内容不会被删，两边的聊天/留言/卡片会合并）`)) window.pullSync(true);
     }
   }catch(e){}
 }
@@ -3280,13 +3386,18 @@ window.openSyncSettings=()=>{
     <div class="pill-btn-group">
       <button class="pill-btn" onclick="window.testSync()">测试连接</button>
       <button class="pill-btn" onclick="window.pushSync()">推送到云端</button>
-      <button class="pill-btn" onclick="window.pullSync()">从云端拉取</button>
-      <button class="pill-btn" onclick="window.forcePushSync()">强制推送</button>
+      <button class="pill-btn" onclick="window.pullSync()">合并云端数据</button>
+    </div>
+    <div class="pill-btn-group" style="margin-top:6px;">
+      <button class="pill-btn" onclick="window.forcePushSync()">强制推送 · 本机→云端</button>
+      <button class="pill-btn" onclick="window.forcePullSync()">强制拉取 · 云端→本机</button>
     </div>
     <div style="margin-top:8px;font-size:calc(var(--fs)*.68);color:var(--text-mute);">
-      ⚠ <b>「从云端拉取」= 用云端覆盖本机</b>（本机数据被替换）；<br>
-      <b>「强制推送」= 用本机覆盖云端</b>（忽略版本冲突，云端那份被替换）。<br>
-      推送报"云端已被其他设备改过"时，先确认哪边才是你要的数据，再点。
+      ✅ <b>「合并云端数据」最安全</b>：按消息/卡片的唯一 id 取并集，
+      两边的聊天记录、留言、卡片都留下，同一条以本机为准，<b>不会删掉本机任何内容</b>。<br>
+      ⚠ 也正因为它只做加法，<b>云端删掉的东西、或你想丢弃的本机内容，合并体现不出来</b>。<br>
+      ⚠ 要"彻底对齐"某一边才用后两个覆盖按钮 —— 都会丢掉另一边独有的内容，点前想清楚。<br>
+      推送报"云端已被其他设备改过"时：<b>本机是最新 → 强制推送；云端是最新 → 合并云端数据</b>。
     </div>
     <div style="margin-top:8px;font-size:calc(var(--fs)*.68);color:var(--text-mute);">
       ⚠ 单文件超过 1MB 会因 GitHub API 限制失败；图片/音效默认不同步，聊天里的图片会以 [图片消息] 占位。
