@@ -4,3 +4,8 @@ ZY/
 # 词表生成产物：真正对外提供资源的仓库是 fcylz/chinese-xinhua（App 走 jsDelivr 拉取），
 # 本仓库不需要、也从不读取本地这份副本
 word-min.json
+
+# 工作目录：只把「记忆笔记」纳入版本管理，
+# 其余（skills / 缓存 / 本地配置 / 可能的凭据）一律不进仓库 —— 本仓库是 public。
+.workbuddy/*
+!.workbuddy/memory/
