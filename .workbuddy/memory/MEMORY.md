@@ -21,6 +21,16 @@
 - 提交需带身份（仓库未配）：`-c user.name="020819LJ" -c user.email="020819LJ@users.noreply.github.com"`
 - ⚠ **仓库公开** → 笔记里不要写凭据、私有仓库细节
 - 验证线上是否更新：抓 `https://fcylz.github.io/cy-moon/app.js` 看 `APP_VERSION`
+
+## 📝 工作记忆约定
+- **只在 `.workbuddy/memory/` 维护**（`YYYY-MM-DD.md` 日记 + `MEMORY.md` 长期笔记）。
+  `.codebuddy/memory/` 是旧工具名留下的冗余副本，内容已于 2026-09-21 全部并入 `.workbuddy/`，
+  **不要再往那边写、也不要从那边读**
+- `.gitignore` 只放行 `.workbuddy/memory/`；`.workbuddy/` 下其余（skills / 缓存 / 配置）不进仓库
+  （本仓库 public）。原有关键规则：`github-pat-token.txt` / `*.code-workspace` / `ZY/` / `word-min.json`
+- ⛔ **改已跟踪的文件前先 `git show HEAD:<file>` 看一眼**，别用 Write 盲写 ——
+  曾因此覆盖掉 `.gitignore` 里 `github-pat-token.txt` 那条安全规则
+- 日记是 append-only；发现旧结论被证伪时，**新写一节说明**并在旧节加一行指向修正，不改写历史
 - 版本号在 `app.js`：`APP_VERSION` / `APP_BUILD` / `APP_CHANGELOG`，另维护 `CHANGELOG.md`
   规则：MINOR=功能，PATCH=修 bug；**数据结构变更必须写 migrate 函数并在 CHANGELOG 说明**
 
