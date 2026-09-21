@@ -119,9 +119,15 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.14.0";
+const APP_VERSION = "1.14.1";
 const APP_BUILD   = "2026-09-21";
 const APP_CHANGELOG = [
+  { v:"1.14.1", d:"2026-09-21", items:[
+    "修复：画作消息云同步后变成「[画作]」纯文本气泡（跨设备看不到画）",
+    "原因：同步前剥媒体时把 painter / painterSeed 一起删了——而画作没有 base64，种子即内容",
+    "现在画作随同步原样带过去，另一台设备靠 seed 现场重绘出同一张画",
+    "体积代价为零（seed 只是几十字节），所以不需要开关；本地应急备份同样保留",
+  ]},
   { v:"1.14.0", d:"2026-09-21", items:[
     "云同步改为「合并式拉取」：按唯一 id 取并集，手机和电脑的新聊天/留言/卡片都保留，不再一边盖一边",
     "列表类按唯一键合并（聊天 mid / 消息 id / 评论 id / 卡片 id / 表情 id / 成员 id / 问卷 id / 分类字符串）",
@@ -636,7 +642,9 @@ function _sanitizeMsgsForBackup(msgs){
     /* ⭕ 保留 sticker / stickerId：它们只是引用锚点（布尔 + 短 id），不是媒体本体。
        删掉的话恢复出来的聊天里，表情消息会认不出类型、引用行也定位不到原表情。 */
     if(c.sticker){ c.text = c.text || "[表情包]"; }
-    if(c.painter){ c.text = c.text || "[画作消息]"; delete c.painter; delete c.painterSeed; }
+    /* ⭕ 画作保留 painter/painterSeed：种子即内容（无 base64），几十字节，
+       本地备份带上它，恢复后画作才能重绘（与 _stripChatMedia 同一策略）。 */
+    if(c.painter){ c.text = c.text || "[画作]"; }
     /* ⭕ 头像同样是 base64（实测单条可达 330KB）—— localStorage 配额只有几 MB，
        不剥掉会把整个应急备份顶爆，连带 chats 一起赔进去 */
     if(c.avatar) delete c.avatar;
@@ -3112,7 +3120,12 @@ function _stripChatMedia(list){
        原来把这两个字段一起删掉是错的：_msgKind 认不出它是表情 → 引用行退化成纯文本，
        连"这条引用的是哪个表情"都定位不到。删了没省到空间，只砸了功能。 */
     if(c.sticker){ c.text=c.text||"[表情包]"; }
-    if(c.painter){ c.text=c.text||"[画作消息]"; delete c.painter; delete c.painterSeed; }
+    /* ⭕ 画作**必须原样带过去** —— 它没有 base64，全部内容就是一个 painterSeed（7 位数字字符串）。
+       渲染走 cfg.painterUrl + "?seed=" 现场重绘（见 _buildMsgRow），所以种子即内容：
+       只要 seed 在，任何设备都能画出**同一张**图，是最不需要媒体同步的类型。
+       原来把这俩字段一起删掉是错的 —— 跨设备后 _msgKind 认不出 painter，整条退化成 "[画作消息]" 纯文本气泡。
+       删它省不到几十字节，只砸了功能（与上面 sticker 那条同一个错误，同一轮修）。 */
+    if(c.painter){ c.text=c.text||"[画作]"; }
     if(c.avatar){ delete c.avatar; }   /* ⭕ 头像也是 base64，云端要它没用（渲染按 memberId 查） */
     return c;
   });
