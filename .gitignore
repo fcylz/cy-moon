@@ -1,3 +1,6 @@
 github-pat-token.txt
 *.code-workspace
 ZY/
+# 词表生成产物：真正对外提供资源的仓库是 fcylz/chinese-xinhua（App 走 jsDelivr 拉取），
+# 本仓库不需要、也从不读取本地这份副本
+word-min.json

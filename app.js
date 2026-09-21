@@ -21,10 +21,29 @@ window.DEFAULTS = {
     recombOn:true, recombProb:15, recombOrder:3,
     recombMin:3, recombMax:30, recombMaxRepeat:3, recombMaxSteps:300,
     musicUrl:"", musicTitle:"", musicArtist:"", musicLrc:"",
-    cloudMusicIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-music/main/index.json",
-    cloudCardIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-chat/main/Word/word.json",
-    cloudStickerIndexUrl:"https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json",
-    cloudMusicLastSync:0, cloudCardLastSync:0, cloudStickerLastSync:0, activeSoundId:"__builtin_thud1__",
+    /* ⭕ 一律用 jsDelivr —— 实测 raw.githubusercontent.com 在本机不可达（fetch 直接 failed），
+       jsDelivr 是同一个 GitHub 仓库的 CDN 镜像，@main 指定分支。
+       旧版本填过 raw 地址的，会在读取时自动换成 jsDelivr（见 _jsdelivr()）。 */
+    cloudMusicIndexUrl:"https://cdn.jsdelivr.net/gh/fcylz/cy-music@main/index.json",
+    cloudCardIndexUrl:"https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Word/word.json",
+    cloudStickerIndexUrl:"https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Meme/meme.json",
+    /* ⭕ 词典源 = chinese-xinhua 成语库（30895 条，3.2MB）。
+       注意分支是 master 不是 main；同仓库的 ci.json(26万词语)/word.json(1.6万汉字) 都超过
+       jsDelivr 的单文件上限，一律 403 拉不到，所以只有 idiom.json 可用。 */
+    cloudDictUrl:"https://cdn.jsdelivr.net/gh/fcylz/chinese-xinhua@master/data/idiom.json",
+    dictOn:true,    // ⭕ 云端词典并入组字语料
+    /* ⭕ 云端汉字表（可选）：word.json 精简版，只留「字+拼音+笔画+部首」349KB。
+       拉不到也没关系 —— 起字池会退回成语字频反推的那 1500 字，不影响其他功能。 */
+    cloudCharUrl:"https://cdn.jsdelivr.net/gh/fcylz/chinese-xinhua@master/data/word-min.json",
+    charOn:true,        // 汉字表并入起字池
+    charMaxStroke:0,    // 笔画上限：0=不限（默认）。筛生僻字靠「活字表」而不是笔画 —— 笔画数不可靠（楍才 12 画）
+    /* ⭕ 云端歇后语（可选）：只建链 + 扩起字池，绝不进 frags（太俗，不能当意象片段）。
+       实测它是「扩起字池」唯一有效的来源 —— 民间口语字全是活字（妈/爷/催/晒/凳/柿/渣/蛤），
+       不像成语低频段那样是死字（祚/筲/洩/夤/缊/赭）。起字池 3000→3792，链 661→2708，
+       首字去重 113→145。⭕ 单纯把成语池放大是无效的：3000→4850 首字去重反而 106→98。 */
+    cloudXhyUrl:"https://cdn.jsdelivr.net/gh/fcylz/chinese-xinhua@master/data/xiehouyu.json",
+    xhyOn:true,         // 歇后语并入语料（建链 + 起字池）
+    cloudMusicLastSync:0, cloudCardLastSync:0, cloudStickerLastSync:0, cloudDictLastSync:0, cloudCharLastSync:0, cloudXhyLastSync:0, activeSoundId:"__builtin_thud1__",
 customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolarBg:false,minimaxKey: "", minimaxVoice: "male-qn-qingse", autoTTS: false,ttsUrl: "https://api.minimax.chat/v1/t2a_v2",
     ttsKey: "",
     ttsGroupId: "",
@@ -291,6 +310,14 @@ function randomSep(){
 function escapeHtml(s){ return String(s??"").replace(/&/g,"&").replace(/</g,"<").replace(/>/g,">").replace(/'/g,"'"); }
 function escapeAttr(s){ return String(s).replace(/\\/g,"\\\\").replace(/'/g,"\\'").replace(/"/g,'\\"').replace(/\n/g,"\\n"); }
 function randInt(a,b){ a=+a||0; b=+b||0; if(b<a)b=a; return Math.floor(Math.random()*(b-a+1))+a; }
+/* ⭕ raw.githubusercontent.com 在本机不可达 → 统一走 jsDelivr 镜像。
+   老用户 cfg 里存的可能还是 raw 地址，这里兜一层，不用手动改数据。 */
+function _jsdelivr(url, fallback){
+  const u=String(url||fallback||"").trim();
+  if(!u) return "";
+  const m=u.match(/^https?:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/);
+  return m ? `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}` : u;
+}
 function fmtTime(d,withSec=false){ return withSec ? d.toTimeString().slice(0,8) : d.toTimeString().slice(0,5); }
 function fmtDate(d){ return d.getFullYear()+"."+String(d.getMonth()+1).padStart(2,"0")+"."+String(d.getDate()).padStart(2,"0"); }
 
@@ -355,6 +382,12 @@ async function init() {
   /* ⭕ 留言板：开屏时若彼有新留言就提醒。
      4.2s 是刻意晚于欢迎页（3s 淡出 + .8s 收尾）—— 否则弹窗会被开屏动画盖住看不见 */
   setTimeout(checkBoardUnread, 4200);
+
+  /* ⭕ 云端词典预热：后台拉，不阻塞启动。拉不到也不影响 —— 组字会退回字卡语料 */
+  if(cfg.dictOn) fetchCloudDict();
+  /* ⭕ 汉字表同理，且是可选增强：拉不到就退回成语字频反推的字 */
+  if(cfg.charOn) fetchCloudChar();
+  if(cfg.xhyOn) fetchCloudXhy();   // ⭕ 歇后语同理：可选增强，拉不到就只有成语那条链
 }
 
 async function saveAll() {
@@ -555,6 +588,9 @@ setSw("sw_songRecOn",  cfg.songRecOn); // ⭕ 推荐歌曲开关同步
 setSw("sw_lyricFromCloud", cfg.lyricFromCloud); // ⭕ 歌词取自曲库开关同步
 setSw("sw_tradTransOn",  cfg.tradTransOn);      // ⭕ 自动繁体译文开关同步
 setSw("sw_recombOn",    cfg.recombOn);          // ⭕ 组字开关同步
+setSw("sw_dictOn",      cfg.dictOn);            // ⭕ 云端词典开关同步
+setSw("sw_charOn",      cfg.charOn);            // ⭕ 云端汉字表开关同步
+setSw("sw_xhyOn",       cfg.xhyOn);             // ⭕ 云端歇后语开关同步
 setSw("sw_hideAesBg",  cfg.hideAesBg);
 setSw("sw_hidePolarBg",cfg.hidePolarBg);
 document.querySelectorAll(".aes-body").forEach(el => el.classList.toggle("hide-bg", !!cfg.hideAesBg));
@@ -2021,7 +2057,17 @@ const RECOMB_TEMPLATES=[
   "{n}年{w}",
   "还有{n}天就{w}",
   "{w}{n}次",
-  "过了{n}年才{w}"
+  "过了{n}年才{w}",
+  /* ⭕ 带意象 {i} / 时间 {t} / 处所 {p} 槽位的模板 —— 给句子一个画面，
+     这些词是内置的，不依赖字卡里有没有（字卡学的是搭配，意象学的是气质） */
+  "{t}，我在{p}看见{i}",
+  "{i}落下来的时候，{w}",
+  "我把{i}留在{p}",
+  "{p}的{i}，还是{w}",
+  "{w}的时候，{i}还在",
+  "{i}和{w}，{w}",
+  "等到{i}都{w}",
+  "{p}有过{i}，也有{w}"
 ];
 const RECOMB_CJK=/[\u4e00-\u9fa5]/;
 
@@ -2061,23 +2107,77 @@ const RECOMB_FUNC_SEGS=[
   "后来才明白","又何必再说","算是想通了","反反复复地","一点一点地","慢慢地也就"
 ];
 
+/* ⭕ 意象 / 时间 / 处所：模板的 {i}{t}{p} 槽位。
+   刻意不放进 Markov 链 —— 它们是「名词」，链学的是字的搭配，
+   把一批固定名词灌进链只会让句子反复出现同一批词。
+   走槽位则每次只出现一两个，像随手拈来的场景。 */
+const RECOMB_IMAGES=[
+  "月亮","海","风","雪","雨","星星","云","影子","站台","信",
+  "窗","梦","路灯","晚风","远方","岸","潮汐","落叶","雾","光"
+];
+const RECOMB_TIMES=[
+  "那年","深夜","凌晨","黄昏","后来","很久以前","从前","那年冬天",
+  "某个傍晚","那天","年少时","这些年","刚刚","忽然之间"
+];
+const RECOMB_PLACES=[
+  "窗前","车站","梦里","海边","路上","楼下","天台","房间里","雨里",
+  "人群里","桥上","院子","门后","街角","山顶","水边"
+];
+
+/* ⭕ 句尾收束：Markov 走到目标长度就硬停，常常断在词中间（「我在月亮里想起」）。
+   补个尾巴既遮住断口，也给句子一个语气。
+   省略号/句号最安全 —— 断得再碎，「……」也接得住；语气词只放不会出错的「吧/啊/嘛」。 */
+const RECOMB_TAIL_RATE=45;   // 有多大比例给句子补个尾巴
+const RECOMB_TAILS=[
+  "……","……","……",       // ⭕ 加权重：断在词中间时它最自然
+  "。","吧。","啊。","嘛。","呢。","了。","～"
+];
+
 let _mkCache=null, _mkSig="";
-/** 语料索引按「卡数 + 屏蔽分类 + 屏蔽卡数」做签名缓存，避免每次回复都重建 */
+/* ⭕ 云端组字词典（详见下方 fetchCloudDict）。声明在这里是因为 _buildMarkov 要用它。 */
+let cloudDictCache=null, _dictLF=null;
+let cloudCharCache=null, _charLF=null;
+let cloudXhyCache=null, _xhyLF=null;
+const CLOUD_DICT_LF_KEY="cy-dict-index";
+const CLOUD_CHAR_LF_KEY="cy-char-index";
+const CLOUD_XHY_LF_KEY="cy-xhy-index";
+/** 当前生效的词典条数 —— 组字门槛与索引签名都以它为准 */
+function _dictSize(){
+  if(!cfg.dictOn || !cloudDictCache) return 0;
+  const d=cloudDictCache;
+  return (d.words?d.words.length:0)+(d.sents?d.sents.length:0)+(d.chars?d.chars.length:0)+(d.funcs?d.funcs.length:0);
+}
+/** ⭕ 汉字表只影响起字池（不建链、不算语料），所以**不计入组字门槛** ——
+    否则光有汉字表没有词典也会启动组字，但 frags 是空的，照样生成不出来 */
+function _charSig(){
+  if(!cfg.charOn || !cloudCharCache) return "0";
+  return (cloudCharCache.data?cloudCharCache.data.length:0)+":"+(cfg.charMaxStroke||0);
+}
+/** ⭕ 歇后语会改变链和起字池，所以也要进签名（同汉字表：不计入组字门槛，只是增强） */
+function _xhySig(){
+  if(!cfg.xhyOn || !cloudXhyCache) return "0";
+  return String(cloudXhyCache.segs?cloudXhyCache.segs.length:0);
+}
+/** 语料索引按「卡数 + 屏蔽分类 + 屏蔽卡数 + 词典规模」做签名缓存，避免每次回复都重建 */
 function _getMarkov(){
   let shieldedCount=0, totalChars=0;
   for(const c of cards){ if(c.shielded) shieldedCount++; totalChars+=(c&&c.text?String(c.text).length:0); }
   /* 总字数也进签名：编辑/替换一张卡（卡数不变）时同样能察觉到变化 */
-  const sig=cards.length+"|"+totalChars+"|"+shieldedCats.join(",")+"|"+shieldedCount;
+  /* ⭕ 词典规模与开关必须进签名 —— 否则拉到词典后索引不会重建，白拉一场 */
+  const sig=cards.length+"|"+totalChars+"|"+shieldedCats.join(",")+"|"+shieldedCount+"|"+_dictSize()+"|"+(cfg.dictOn?1:0)+"|"+_charSig()+"|"+_xhySig();
   if(_mkCache && _mkSig===sig) return _mkCache;
   _mkCache=_buildMarkov(); _mkSig=sig;
   return _mkCache;
 }
 function _buildMarkov(){
-  const idx={ bi:new Map(), tri:new Map(), chars:[], frags:[], segs:[], src:0, bytes:0 };
+  const idx={ bi:new Map(), tri:new Map(), chars:[], frags:[], segs:[], src:0, bytes:0, dict:0 };
   const src=cards.filter(c=>!c.shielded && !shieldedCats.includes(c.cat) && c.cat!=="歌词库");
   idx.src=src.length;
-  if(src.length<RECOMB_MIN_SRC) return idx;
-  const charSet=new Set();
+  idx.dict=_dictSize();
+  /* ⭕ 字卡一张都没有时，云端词典是唯一语料 —— 门槛要把词典算进去，
+     否则「不加字卡」的用户组字永远启动不了 */
+  if(src.length + idx.dict < RECOMB_MIN_SRC) return idx;
+  const charSet=new Set(); let live=null;   // live = 活字表（成语字频 top3000），汉字表靠它过滤
   const add=(m,k,v)=>{ let a=m.get(k); if(!a){ a=[]; m.set(k,a); } a.push(v); };
   for(const card of src){
     const raw=String(card.text||"");
@@ -2097,6 +2197,56 @@ function _buildMarkov(){
       if(seg.length>=4){
         const L=Math.min(seg.length, 4+Math.floor(Math.random()*7));
         idx.segs.push(seg.substr(Math.floor(Math.random()*(seg.length-L+1)), L));
+      }
+    }
+  }
+  /* ⭕ 云端词典：整条进池，不切随机子串 —— 所以不会出现「月亮里想」这种切碎的片段。
+       words(2-4字) → frags 供模板填空；sents → segs 供长句拼段；chars → 起字池。
+       三者都参与建链，让短句 Markov 也能学到这些搭配。 */
+  if(cfg.dictOn && cloudDictCache){
+    const d=cloudDictCache;
+    const feed=(t)=>{
+      if(!t || t.length<2) return;
+      for(const ch of t) if(RECOMB_CJK.test(ch)) charSet.add(ch);
+      for(let i=0;i+1<t.length;i++){
+        add(idx.bi, t[i], t[i+1]);
+        if(i+2<t.length) add(idx.tri, t[i]+t[i+1], t[i+2]);
+      }
+      idx.bytes+=t.length;
+    };
+    /* ⭕ 成语字频 top3000：既是起字池，也是判定「活字」的依据 —— 汉字表拿它过滤 */
+    for(const t of d.chars||[]) for(const ch of String(t)) if(RECOMB_CJK.test(ch)) charSet.add(ch);
+    if(d.chars && d.chars.length) live=new Set(d.chars);
+    for(const t of d.words||[]){ feed(t); idx.frags.push(t); }
+    for(const t of d.sents||[]){ feed(t); idx.segs.push(t); }
+    /* ⭕ funcs 只建链：不做起字、不进任何池 —— 它负责让句子接得顺，不负责被填空 */
+    for(const t of d.funcs||[]) feed(t);
+  }
+  /* ⭕ 汉字表只进起字池、不建链（单字之间没有搭配可学），且只收「活字」—— 必须先出现在成语字频表（d.chars）里。
+     实测直接全收 16141 字会冒出 楍 杛 蓛 窚 蘾 邃 訚 氃 鷏 这类字典里有、
+     但现代汉语根本不用的字（笔画数也筛不掉，楍才 12 画）。
+     没有成语库时不接入 —— 那就没有判定活字的依据了。 */
+  if(cfg.charOn && cloudCharCache && Array.isArray(cloudCharCache.data) && live){
+    const maxS=+(cfg.charMaxStroke||0);
+    for(const it of cloudCharCache.data){
+      const w=it && it[0];
+      if(!w) continue;
+      if(!live.has(w)) continue;
+      if(maxS && (+(it[2]||0))>maxS) continue;
+      if(RECOMB_CJK.test(w)) charSet.add(w);
+    }
+  }
+  /* ⭕ 云端歇后语：**建链 + 扩起字池**，但不进 frags/segs。
+     它解决的是「起字池扩大」的真正瓶颈：池里 3000 字只有 ~110 个能接得下去，
+     因为绝大多数字没有后续搭配。歇后语是民间口语，给大量常用字补上了搭配，
+     链 661→2708，首字去重 113→145。字本身也大多是活字（妈/爷/催/晒/凳/柿）。 */
+  if(cfg.xhyOn && cloudXhyCache){
+    for(const t of cloudXhyCache.segs||[]){
+      if(!t || t.length<2) continue;
+      for(const ch of t) if(RECOMB_CJK.test(ch)) charSet.add(ch);
+      for(let i=0;i+1<t.length;i++){
+        add(idx.bi, t[i], t[i+1]);
+        if(i+2<t.length) add(idx.tri, t[i]+t[i+1], t[i+2]);
       }
     }
   }
@@ -2148,7 +2298,9 @@ const RECOMB_WALK_CAP=12;  // 超过这个长度就不再硬走单段链
 const RECOMB_MAX_PIECES=4; // 长句最多拼几段
 function _markovSentence(){
   const M=_getMarkov();
-  if(!M || M.src<RECOMB_MIN_SRC || M.chars.length<RECOMB_MIN_CHARS) return "";
+  /* ⭕ 门槛必须算上词典 —— 只改 genRecomb 不够，这里漏了的话字卡为 0 时
+     Markov 永远返回空，生成会全部退化成模板句（表现为成语/词藻堆砌） */
+  if(!M || (M.src + (M.dict||0)) < RECOMB_MIN_SRC || M.chars.length<RECOMB_MIN_CHARS) return "";
   const order = (cfg.recombOrder===2)?2:3;
   const minL = Math.max(1, +(cfg.recombMin||3));
   const maxL = Math.max(minL, +(cfg.recombMax||30));
@@ -2187,9 +2339,13 @@ function _tmplSentence(){
   const M=_getMarkov();
   if(!M || !M.frags.length) return "";
   const tpl=RECOMB_TEMPLATES[Math.floor(Math.random()*RECOMB_TEMPLATES.length)];
+  const pick=a=>a[Math.floor(Math.random()*a.length)];
   return tpl
     .replace(/\{w\}/g, ()=> M.frags[Math.floor(Math.random()*M.frags.length)])
-    .replace(/\{n\}/g, ()=> RECOMB_NUM_POOL[Math.floor(Math.random()*RECOMB_NUM_POOL.length)]);
+    .replace(/\{n\}/g, ()=> pick(RECOMB_NUM_POOL))
+    .replace(/\{i\}/g, ()=> pick(RECOMB_IMAGES))
+    .replace(/\{t\}/g, ()=> pick(RECOMB_TIMES))
+    .replace(/\{p\}/g, ()=> pick(RECOMB_PLACES));
 }
 /** 组字入口：B 失败降级 C，都失败返回 ""（调用方退回原抽卡逻辑） */
 function genRecomb(){
@@ -2211,8 +2367,268 @@ function genRecomb(){
     const sep=randomSep();
     if(sep) s=s.slice(0,pos)+sep+s.slice(pos);
   }
+  /* ⭕ 句尾收束：只在结尾没有标点时才补 —— 硬切出来的句子往往正断在词中间 */
+  if(!/[，。！…？～,.]$/.test(s) && Math.random()*100 < RECOMB_TAIL_RATE){
+    s += RECOMB_TAILS[Math.floor(Math.random()*RECOMB_TAILS.length)];
+  }
   return s;
 }
+
+/* ════════════════════════════════════════════
+   ══ 云端组字词典 ══
+   与云端字卡 / 音乐 / 表情包同一套模式：内存 → localforage → 网络，失败降级到缓存。
+   拉来的内容只作组标语料：不进 cards、不污染字卡库、也不进备份导出（缓存性质，随时可重拉）。
+   ════════════════════════════════════════════ */
+const DICT_MAX_ITEMS=8000;   // 上限：防止超大文件把建索引拖垮
+
+/* ⭕ chinese-xinhua 成语库专用：不是什么成语都能进组字。
+   实测两种失败：① 3 万条直接填空 → 「我想一花独放迁思回虑」这种堆砌；
+   ② 只建链 → 字级游走会把成语切碎成半截（「拔毛连茹毛饮」「车击舟连」）。
+   所以分两路：写景成语（月白风清/山长水阔/风雨如晦…）进 frags 当意象片段，
+   其余成语只建链提供汉字搭配，绝不进任何池。 */
+const DICT_IMG_CHARS=new Set([..."月風风雲云雨雪山水海天星夜江河湖林霜露霞春秋光影梦舟柳雁花潮汐岸桥窗灯烟暮晓晴空野原香"]);
+/* 人事 / 贬义 / 青楼用字：沾一个就排除 —— 否则会混进「花街柳巷」「酒地花天」 */
+const DICT_BAD_CHARS=new Set([..."不无死杀兵刀血鬼魂忧愁恨怨争斗抢夺贪奸盗贼恶劣愚蠢病痛苦街巷市门户院酒买卖金残败枯妻夫妾妓娼宠迷偷淫浪营阵攀问寻觅采折"]);
+function _fromXinhuaIdioms(arr){
+  const all=[];
+  for(const it of arr){
+    const w=String((it&&(it.word||it.ci))??"").replace(/[^\u4e00-\u9fa5]/g,"");
+    if(w.length>=3 && w.length<=4) all.push(w);
+  }
+  if(!all.length) return null;
+  /* 字频：成语用字很偏，取高频的当「常用字」，用它剔掉阿党比周、通工易事这类。
+     ⭕ 1500 → 3000：实测 3000 以内抽样仍是干净常用字（登嶙坐债责赞月有忧尤枣糟寓），
+     超过 3000 就开始冒 祚 筲 洩 夤 缊 赭 鼗 这类「字典里有、现代汉语不用」的字。 */
+  const freq=new Map();
+  for(const w of all) for(const c of w) freq.set(c,(freq.get(c)||0)+1);
+  const common=new Set([...freq.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3000).map(x=>x[0]));
+  const usable=all.filter(w=>[...w].every(c=>common.has(c)));
+  /* 写景成语：至少两个意象字，且不沾人事贬义字 */
+  const scenic=usable.filter(w=>{
+    const cs=[...w];
+    if(cs.some(c=>DICT_BAD_CHARS.has(c))) return false;
+    return cs.filter(c=>DICT_IMG_CHARS.has(c)).length>=2;
+  });
+  return {
+    words:[...new Set(scenic)].slice(0,DICT_MAX_ITEMS),      // → frags，意象片段
+    sents:[],
+    /* ⭕ 起字池 = 成语里的高频字（1500 个）。
+       word.json（1.6 万字完整字典）超 jsDelivr 上限拉不到，但它的用途本来就只是
+       「起字池 + 常用字过滤」—— 成语库自带的字足够顶上，不进池也会漏掉大半常用字。 */
+    chars:[...common],
+    /* ⭕ 其余成语**不建链**。实测把 6000 条生僻成语灌进链后，字级游走会走出
+       「饭涂羹之让人」「猿鹤继凫短鹤」这种半截成语，比不灌更糟。
+       链只来自写景成语 + 内置虚词骨架，句子最干净。 */
+    funcs:[],
+    total:all.length,                                        // 原始成语总数，仅用于展示
+    at:Date.now()
+  };
+}
+/** 云端内容不可信，先洗一遍：只留汉字、限长 */
+function _cleanDictItem(s){
+  const t=String(s??"").replace(/[^\u4e00-\u9fa5]/g,"");
+  return (t.length>=1 && t.length<=20) ? t : "";
+}
+function _normaliseCloudDict(data){
+  if(!data) return null;
+  const words=[], sents=[], chars=[], funcs=[];
+  const push=(arr,x)=>{ if(arr.length>=DICT_MAX_ITEMS) return; const t=_cleanDictItem(x); if(t) arr.push(t); };
+  if(Array.isArray(data)){
+    /* ⭕ 成语库（chinese-xinhua）格式：元素是 {word, pinyin, explanation, derivation} */
+    if(data.length && data[0] && typeof data[0]==="object" && (data[0].word || data[0].ci)){
+      const r=_fromXinhuaIdioms(data);
+      if(r) return r;
+    }
+    /* 纯数组：按长度自动分流 —— 随便丢一个词表文件也能直接用 */
+    for(const x of data){ const t=_cleanDictItem(x); if(t) (t.length<=4?words:sents).push(t); }
+  }else{
+    for(const x of (data.words||data.frags||[])) push(words,x);
+    for(const x of (data.sents||data.segs||data.sentences||[])) push(sents,x);
+    for(const x of (data.chars||[])) push(chars,x);
+    /* ⭕ funcs = 功能词（其实/后来/一直…）：只建链，绝不进 frags，
+       否则会被填进模板 {w} 变成「其实，过了9年才海」这种不通的句子 */
+    for(const x of (data.funcs||data.func||[])) push(funcs,x);
+  }
+  const w=words.filter(Boolean), s=sents.filter(Boolean), c=chars.filter(Boolean), f=funcs.filter(Boolean);
+  return (w.length||s.length||c.length||f.length) ? {words:w, sents:s, chars:c, funcs:f, at:Date.now()} : null;
+}
+function _ensureDictLF(){
+  if(!_dictLF && typeof localforage!=="undefined") _dictLF=localforage.createInstance({name:"SilentChamberDictCache"});
+  return _dictLF;
+}
+async function fetchCloudDict(forceRefresh){
+  const lf=_ensureDictLF();
+  const url=_jsdelivr(cfg.cloudDictUrl,"https://cdn.jsdelivr.net/gh/fcylz/chinese-xinhua@master/data/idiom.json");
+  if(!url) return null;
+  if(!forceRefresh && cloudDictCache) return cloudDictCache;
+  if(!forceRefresh && lf){
+    try{
+      /* ⭕ 缓存要认来源：换了词典地址（比如从手写 dict.json 改成成语库）后，
+         老缓存必须失效，否则用户以为换了源，看到的还是旧内容 */
+      const c=await lf.getItem(CLOUD_DICT_LF_KEY);
+      if(c && c.src===url && ((c.words&&c.words.length)||(c.sents&&c.sents.length))){ cloudDictCache=c; _mkCache=null; return c; }
+    }catch(e){}
+  }
+  try{
+    const res=await fetch(url,{cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d=_normaliseCloudDict(await res.json());
+    if(!d) throw new Error("词典为空");
+    d.src=url;
+    cloudDictCache=d;
+    if(lf){ try{ await lf.setItem(CLOUD_DICT_LF_KEY,d); }catch(e){} }
+    cfg.cloudDictLastSync=Date.now(); saveAllDebounced();
+    _mkCache=null;                                   // ⭕ 索引必须重建，否则词典不生效
+    _dictStatus(`词典 ${d.words.length+d.sents.length} 条${d.total?`（源自 ${d.total} 条成语）`:""} · 已同步`);
+    return d;
+  }catch(e){
+    if(cloudDictCache) return cloudDictCache;
+    if(lf){
+      try{
+        const c=await lf.getItem(CLOUD_DICT_LF_KEY);
+        if(c){ cloudDictCache=c; _mkCache=null; _dictStatus("词典离线缓存"); return c; }
+      }catch(e2){}
+    }
+    _dictStatus("词典拉取失败");
+    return null;
+  }
+}
+function _dictStatus(msg){ const el=document.getElementById("dictStatus"); if(el){ el.style.display=""; el.textContent=msg; } }
+window.refreshCloudDict=async()=>{
+  const lf=_ensureDictLF(); if(lf){ try{ await lf.removeItem(CLOUD_DICT_LF_KEY); }catch(e){} }
+  cloudDictCache=null; _mkCache=null;
+  _dictStatus("正在拉取…");
+  const d=await fetchCloudDict(true);
+  toast(d?`词典已更新：${d.words.length+d.sents.length} 条`:"词典拉取失败","warn");
+  if(typeof renderRecombSettings==="function") renderRecombSettings();
+};
+
+/* ⭕ 云端汉字表：与词典同一套缓存模式，但它是**可选增强** ——
+   拉不到就退回成语字频反推的那 1500 字，绝不因为汉字表失败而影响组字。 */
+function _normaliseCloudChar(data){
+  if(!data || !Array.isArray(data.data)) return null;
+  const out=[];
+  for(const it of data.data){
+    if(!it || !it[0]) continue;
+    const w=String(it[0]);
+    if(!/^[\u4e00-\u9fa5]$/.test(w)) continue;   // 只收单字
+    out.push([w, String(it[1]||"").slice(0,12), +(it[2]||0), String(it[3]||"").slice(0,1)]);
+  }
+  return out.length ? {data:out, total:out.length, at:Date.now()} : null;
+}
+function _ensureCharLF(){
+  if(!_charLF && typeof localforage!=="undefined") _charLF=localforage.createInstance({name:"SilentChamberCharCache"});
+  return _charLF;
+}
+async function fetchCloudChar(forceRefresh){
+  const lf=_ensureCharLF();
+  const url=_jsdelivr(cfg.cloudCharUrl,"https://cdn.jsdelivr.net/gh/fcylz/chinese-xinhua@master/data/word-min.json");
+  if(!url || !cfg.charOn) return null;
+  if(!forceRefresh && cloudCharCache) return cloudCharCache;
+  if(!forceRefresh && lf){
+    try{
+      const c=await lf.getItem(CLOUD_CHAR_LF_KEY);
+      if(c && c.src===url && c.data){ cloudCharCache=c; _mkCache=null; return c; }
+    }catch(e){}
+  }
+  try{
+    const res=await fetch(url,{cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d=_normaliseCloudChar(await res.json());
+    if(!d) throw new Error("汉字表为空");
+    d.src=url;
+    cloudCharCache=d;
+    if(lf){ try{ await lf.setItem(CLOUD_CHAR_LF_KEY,d); }catch(e){} }
+    cfg.cloudCharLastSync=Date.now(); saveAllDebounced();
+    _mkCache=null;
+    _charStatus(`${d.total} 字 · 已同步`);
+    return d;
+  }catch(e){
+    if(cloudCharCache) return cloudCharCache;
+    if(lf){
+      try{
+        const c=await lf.getItem(CLOUD_CHAR_LF_KEY);
+        if(c){ cloudCharCache=c; _mkCache=null; _charStatus("汉字表离线缓存"); return c; }
+      }catch(e2){}
+    }
+    _charStatus("未加载（可选，不影响组字）");
+    return null;
+  }
+}
+function _charStatus(msg){ const el=document.getElementById("charStatus"); if(el){ el.style.display=""; el.textContent=msg; } }
+window.refreshCloudChar=async()=>{
+  const lf=_ensureCharLF(); if(lf){ try{ await lf.removeItem(CLOUD_CHAR_LF_KEY); }catch(e){} }
+  cloudCharCache=null; _mkCache=null;
+  _charStatus("正在拉取…");
+  const d=await fetchCloudChar(true);
+  toast(d?`汉字表已更新：${d.total} 字`:"汉字表拉取失败（可选，不影响组字）","warn");
+  if(typeof renderRecombSettings==="function") renderRecombSettings();
+};
+
+/* ⭕ 云端歇后语：与汉字表同一套缓存模式，同为可选增强。
+   解析成「子句」而不是整条 —— 一条歇后语常带谐音和标点，整条灌进去会学到脏搭配。 */
+function _normaliseCloudXhy(data){
+  const arr=Array.isArray(data)?data:(data&&Array.isArray(data.data)?data.data:null);
+  if(!arr || !arr.length) return null;
+  const out=[];
+  for(const it of arr){
+    if(!it) continue;
+    const s=String(it.riddle||it.谜面||"")+" "+String(it.answer||it.ans||it.谜底||"");
+    for(const seg of s.split(/[^\u4e00-\u9fa5]+/)){
+      if(seg.length>=2 && seg.length<=8) out.push(seg);   // 太长的多半是整句俗语，切碎了才好用
+    }
+  }
+  if(!out.length) return null;
+  return {segs:[...new Set(out)].slice(0,8000), total:arr.length, at:Date.now()};
+}
+function _ensureXhyLF(){
+  if(!_xhyLF && typeof localforage!=="undefined") _xhyLF=localforage.createInstance({name:"SilentChamberXhyCache"});
+  return _xhyLF;
+}
+async function fetchCloudXhy(forceRefresh){
+  const lf=_ensureXhyLF();
+  const url=_jsdelivr(cfg.cloudXhyUrl,"https://cdn.jsdelivr.net/gh/fcylz/chinese-xinhua@master/data/xiehouyu.json");
+  if(!url || !cfg.xhyOn) return null;
+  if(!forceRefresh && cloudXhyCache) return cloudXhyCache;
+  if(!forceRefresh && lf){
+    try{
+      const c=await lf.getItem(CLOUD_XHY_LF_KEY);
+      if(c && c.src===url && c.segs){ cloudXhyCache=c; _mkCache=null; return c; }
+    }catch(e){}
+  }
+  try{
+    const res=await fetch(url,{cache:"no-store"});
+    if(!res.ok) throw new Error("HTTP "+res.status);
+    const d=_normaliseCloudXhy(await res.json());
+    if(!d) throw new Error("歇后语为空");
+    d.src=url;
+    cloudXhyCache=d;
+    if(lf){ try{ await lf.setItem(CLOUD_XHY_LF_KEY,d); }catch(e){} }
+    cfg.cloudXhyLastSync=Date.now(); saveAllDebounced();
+    _mkCache=null;
+    _xhyStatus(`${d.segs.length} 子句 · 已同步`);
+    return d;
+  }catch(e){
+    if(cloudXhyCache) return cloudXhyCache;
+    if(lf){
+      try{
+        const c=await lf.getItem(CLOUD_XHY_LF_KEY);
+        if(c){ cloudXhyCache=c; _mkCache=null; _xhyStatus("歇后语离线缓存"); return c; }
+      }catch(e2){}
+    }
+    _xhyStatus("未加载（可选，不影响组字）");
+    return null;
+  }
+}
+function _xhyStatus(msg){ const el=document.getElementById("xhyStatus"); if(el){ el.style.display=""; el.textContent=msg; } }
+window.refreshCloudXhy=async()=>{
+  const lf=_ensureXhyLF(); if(lf){ try{ await lf.removeItem(CLOUD_XHY_LF_KEY); }catch(e){} }
+  cloudXhyCache=null; _mkCache=null;
+  _xhyStatus("正在拉取…");
+  const d=await fetchCloudXhy(true);
+  toast(d?`歇后语已更新：${d.segs.length} 子句`:"歇后语拉取失败（可选，不影响组字）","warn");
+  if(typeof renderRecombSettings==="function") renderRecombSettings();
+};
 
 async function fireReply(){
   const now=new Date();
@@ -3826,10 +4242,62 @@ function renderRecombSettings(){
         <span id="${id}Val" style="min-width:36px;text-align:right;font-size:calc(var(--fs)*.75);color:var(--text-mute);">${cfg[key]}${unit}</span>
       </div>`;
   const stats = (()=>{ try{ const M=_getMarkov();
-    return M.src ? `可用字卡 ${M.src} 张 · 不同汉字 ${M.chars.length} 个 · 语料 ${M.bytes} 字` : `无可用字卡（组字会直接退回抽卡）`;
+    const dictPart = M.dict ? ` · 词典 ${M.dict} 条` : "";
+    if(!M.src && !M.dict) return `无可用语料（组字会直接退回抽卡）`;
+    return `可用字卡 ${M.src} 张${dictPart} · 不同汉字 ${M.chars.length} 个 · 语料 ${M.bytes} 字`;
   }catch(e){ return "—"; } })();
+  const dictInfo = (()=>{
+    if(!cfg.dictOn) return "已关闭 —— 只用语卡组字";
+    const d=cloudDictCache;
+    if(!d) return "未加载 · 点下方按钮拉取";
+    const when=cfg.cloudDictLastSync ? ` · ${new Date(cfg.cloudDictLastSync).toLocaleDateString()}` : "";
+    /* ⭕ 成语库只把「写景」那部分当意象片段，其余只建链 —— 所以展示要分开说，
+       否则看到的条数会比原库少一大截，像没拉全 */
+    return d.total
+      ? `写景 ${d.words.length} 条（筛选自 ${d.total} 条成语）${when}`
+      : `${d.words.length+d.sents.length} 条（词 ${d.words.length} / 句 ${d.sents.length}）${when}`;
+  })();
+  const charInfo = (()=>{
+    if(!cfg.charOn) return "已关闭 —— 起字只用成语字频那 3000 字";
+    const c=cloudCharCache;
+    if(!c) return "未加载 · 点下方按钮拉取（不影响组字）";
+    const maxS=+(cfg.charMaxStroke||0);
+    /* ⭕ 真正进池多少由 _buildMarkov 的活字过滤决定（16141 里通常只有 ~3000 合格），
+       所以这里读已建好的索引，别报一个假数字 */
+    const pool=(_mkCache&&_mkCache.chars)?_mkCache.chars.length:null;
+    return `${c.total} 字${pool?` · 起字池 ${pool}`:""}${maxS?` · 笔画 ≤ ${maxS}`:""}`;
+  })();
+  const xhyInfo = (()=>{
+    if(!cfg.xhyOn) return "已关闭 —— 起字池只有成语字频那 3000 字";
+    const c=cloudXhyCache;
+    if(!c) return "未加载 · 点下方按钮拉取（可选）";
+    const pool=(_mkCache&&_mkCache.chars)?_mkCache.chars.length:null;
+    return `${c.segs.length} 子句${pool?` · 起字池 ${pool}`:""}`;
+  })();
   const html = `
     <div style="font-size:calc(var(--fs)*.72);color:var(--text-mute);margin-bottom:2px;">${stats}</div>
+    <div style="margin-top:10px;font-size:calc(var(--fs)*.74);">云端词典</div>
+    <div class="stoggle-row">
+      <span>使用云端词典</span>
+      <div class="sw" id="sw_dictOn" onclick="cfgToggle('dictOn')"><div class="sw-indicator"></div></div>
+    </div>
+    <div id="dictStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:2px 0 6px;">${dictInfo}</div>
+    <button class="pill-btn" onclick="window.refreshCloudDict()">拉取 / 刷新词典</button>
+    <div style="margin-top:12px;font-size:calc(var(--fs)*.74);">云端汉字表 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">扩充起字池，可选</span></div>
+    <div class="stoggle-row">
+      <span>使用云端汉字表</span>
+      <div class="sw" id="sw_charOn" onclick="cfgToggle('charOn')"><div class="sw-indicator"></div></div>
+    </div>
+    <div id="charStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:2px 0 6px;">${charInfo}</div>
+    <button class="pill-btn" onclick="window.refreshCloudChar()">拉取 / 刷新汉字表</button>
+    ${row("笔画上限","0 = 不限（推荐）。笔画数判不了生僻字，楍 才 12 画", slide("charStroke","charMaxStroke",0,25,1," 画",""))}
+    <div style="margin-top:12px;font-size:calc(var(--fs)*.74);">云端歇后语 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">扩起字池 + 补口语链</span></div>
+    <div class="stoggle-row">
+      <span>使用云端歇后语</span>
+      <div class="sw" id="sw_xhyOn" onclick="cfgToggle('xhyOn')"><div class="sw-indicator"></div></div>
+    </div>
+    <div id="xhyStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:2px 0 6px;">${xhyInfo}</div>
+    <button class="pill-btn" onclick="window.refreshCloudXhy()">拉取 / 刷新歇后语</button>
     ${row("触发占比","文字回复里多大比例走组字", slide("rcProb","recombProb",0,100,5,"%",""))}
     ${row("链阶","2=更跳脱，3=更像原句", `
       <div class="tab-switch" id="rcOrderTab" style="margin:0;">
@@ -3844,15 +4312,22 @@ function renderRecombSettings(){
     <div id="rcPreview" style="margin-top:8px;font-size:calc(var(--chat-fs)*.9);color:var(--text);min-height:20px;"></div>
   `;
   modal("组字设置", html);
+  /* ⭕ modal 是新建的 DOM，渲染完得自己同步开关状态 —— 之前漏了 charOn，
+     打开设置时汉字表开关会显示成「关」，看着像没启用 */
+  setSw("sw_dictOn", !!cfg.dictOn);
+  setSw("sw_charOn", !!cfg.charOn);
+  setSw("sw_xhyOn",  !!cfg.xhyOn);
 }
 window.setRecombOrder = async v => {
   cfg.recombOrder = +v;
   await saveAll();
   document.querySelectorAll("#rcOrderTab .ts-opt").forEach(el => el.classList.toggle("active", +el.dataset.v === v));
 };
-window.previewRecomb = () => {
+window.previewRecomb = async () => {
   const box = document.getElementById("rcPreview");
   if (!box) return;
+  /* ⭕ 没词典就先拉一次，否则「试生成」看不出词典效果 */
+  if (cfg.dictOn && !cloudDictCache) { box.innerText = "正在拉取词典…"; await fetchCloudDict(); }
   _mkCache = null; // 强制重建索引，让参数改动立刻生效
   const s = genRecomb();
   box.innerText = s || "生成失败（语料太稀或参数过严），已退回原抽卡逻辑";
@@ -4454,7 +4929,7 @@ async function fetchCloudIndex(forceRefresh) {
   // ③ 网络获取
   updateCloudStatus("正在连接云端曲库…");
   try {
-    const indexUrl = cfg.cloudMusicIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-music/main/index.json";
+    const indexUrl = _jsdelivr(cfg.cloudMusicIndexUrl, "https://cdn.jsdelivr.net/gh/fcylz/cy-music@main/index.json");
     const res = await fetch(indexUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const raw = await res.json();
@@ -4946,7 +5421,7 @@ function _flattenCloudCards(groups) {
 
 async function fetchCloudCards(forceRefresh) {
   const lf = _ensureCardLF();
-  const indexUrl = cfg.cloudCardIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Word/word.json";
+  const indexUrl = _jsdelivr(cfg.cloudCardIndexUrl, "https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Word/word.json");
 
   if (!forceRefresh && cloudCardCache && cloudCardCache.length) return cloudCardCache;
 
@@ -5224,7 +5699,7 @@ function _normaliseCloudStickers(data) {
 
 async function fetchCloudStickers(forceRefresh) {
   const lf = _ensureStickerLF();
-  const indexUrl = cfg.cloudStickerIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json";
+  const indexUrl = _jsdelivr(cfg.cloudStickerIndexUrl, "https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Meme/meme.json");
 
   if (!forceRefresh && cloudStickerCache && cloudStickerCache.length) return cloudStickerCache;
 
@@ -5319,7 +5794,7 @@ window.filterCloudStickers = () => {
 // 从云表情索引 URL 推导出图片资源的基础路径（仓库根目录）
 // 例如 https://…/cy-chat/main/Meme/meme.json → https://…/cy-chat/main/
 function _cloudStickerBase() {
-  const idx = cfg.cloudStickerIndexUrl || "https://raw.githubusercontent.com/fcylz/cy-chat/main/Meme/meme.json";
+  const idx = _jsdelivr(cfg.cloudStickerIndexUrl, "https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Meme/meme.json");
   // meme.json 内的 url 字段是相对于仓库根的（如 Meme/images/xxx.jpg），所以取 /main/ 层级
   const m = idx.match(/^(.+\/[^\/]+\/)Meme\/meme\.json$/);
   if (m) return m[1];
