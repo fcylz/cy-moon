@@ -127,6 +127,24 @@ function _migrateChatsMid(){
   for(const m of chats){ if(m && !m.mid){ m.mid=_genMid(); dirty=true; } }
   return dirty;
 }
+/* ⭕ 清掉消息里内嵌的头像 base64。
+   渲染早就改走 memberId 查 groupMembers 了（见 _buildMsgRow 的 av 取值），
+   消息里那份 avatar 是**永不读取的死数据** —— 但实测 12 条群聊消息各带一份 330KB 头像，
+   占 chats 总体积的 99.6%（193 条消息总共 4MB，其中 3960KB 是头像）。
+   老数据没有 memberId 时先按 name 补一个再删，保住头像显示。
+   幂等：消息里没有 avatar 就完全不动作。 */
+function _migrateChatsDropAvatar(){
+  let dirty=false;
+  for(const m of chats){
+    if(!m || !m.avatar) continue;
+    if(!m.memberId && m.name && Array.isArray(groupMembers) && groupMembers.length){
+      const g=groupMembers.find(x=>x && x.name===m.name);
+      if(g && g.id) m.memberId=g.id;
+    }
+    delete m.avatar; dirty=true;
+  }
+  return dirty;
+}
 /** 消息类型识别：决定引用预览怎么渲染 */
 function _msgKind(m){
   if(!m) return "text";
@@ -356,6 +374,8 @@ async function init() {
     normalizeMsgs(); /* ⭕ 老数据（扁平留言）迁成「帖子 + 评论」两层 */
     /* ⭕ 老数据补 mid（只会在首次升级时写一次） */
     if(_migrateChatsMid()) saveAllDebounced();
+    /* ⭕ 老数据里每条消息内嵌的头像 base64 只清一次 —— 首次升级后 chats 从几 MB 掉到几十 KB */
+    if(_migrateChatsDropAvatar()) saveAllDebounced();
   } catch(e){ console.warn(e); }
 
   document.getElementById("dockL1").innerHTML = DOCK_HTML;
@@ -439,6 +459,9 @@ function _sanitizeMsgsForBackup(msgs){
     if(c.image){ c.text = c.text || "[图片消息]"; delete c.image; }
     if(c.sticker){ c.text = c.text || "[贴纸消息]"; delete c.sticker; delete c.stickerId; }
     if(c.painter){ c.text = c.text || "[画作消息]"; delete c.painter; delete c.painterSeed; }
+    /* ⭕ 头像同样是 base64（实测单条可达 330KB）—— localStorage 配额只有几 MB，
+       不剥掉会把整个应急备份顶爆，连带 chats 一起赔进去 */
+    if(c.avatar) delete c.avatar;
     return c;
   });
 }
@@ -2714,6 +2737,7 @@ function _stripChatMedia(list){
     if(c.image){ c.text=c.text||"[图片消息]"; delete c.image; }
     if(c.sticker){ c.text=c.text||"[贴纸消息]"; delete c.sticker; delete c.stickerId; }
     if(c.painter){ c.text=c.text||"[画作消息]"; delete c.painter; delete c.painterSeed; }
+    if(c.avatar){ delete c.avatar; }   /* ⭕ 头像也是 base64，云端要它没用（渲染按 memberId 查） */
     return c;
   });
 }
@@ -3056,6 +3080,9 @@ function _addChatMsg(msg) {
       if(_tp>0 && Math.random()*100<_tp) msg.tradPrimary=true;
     }
   }
+  /* ⭕ 消息不落 avatar：头像改由 memberId 查 groupMembers（见 _buildMsgRow）。
+     构造处的 avatar 只服务通知/弹窗，不进库 —— 一条消息一份 330KB base64 是纯浪费。 */
+  delete msg.avatar;
   chats.push(msg); markStatsDirty();
   if (chats.length > CHAT_MAX + 500) {
     chats = chats.slice(-CHAT_MAX);
