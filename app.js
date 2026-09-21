@@ -5440,9 +5440,10 @@ function normalizeMsgs(){
   msgs=out;
 }
 
-/* ⭕ 彼的一天只分七个时段 —— 虚拟时间就粗到这个粒度，不再出现具体几点几分。
-   边界按「起始小时」升序排列，24 点即收尾。 */
-const BOARD_DAY_PARTS=[{h:0,n:"凌晨"},{h:5,n:"清晨"},{h:8,n:"早上"},{h:11,n:"中午"},{h:13,n:"下午"},{h:17,n:"傍晚"},{h:19,n:"晚上"}];
+/* ⭕ 彼的一天只分六个时段 —— 时刻是虚拟的，粗到这个粒度就够了，不再出现具体几点几分。
+   边界按「起始小时」升序排列，24 点即收尾（傍晚一直管到深夜）。
+   要加回「晚上」就在傍晚后面插一行 {h:19,n:"晚上"}。 */
+const BOARD_DAY_PARTS=[{h:0,n:"凌晨"},{h:5,n:"清晨"},{h:8,n:"早上"},{h:11,n:"中午"},{h:13,n:"下午"},{h:17,n:"傍晚"}];
 function boardDayPart(h){
   let n=BOARD_DAY_PARTS[0].n;
   for(const p of BOARD_DAY_PARTS) if(h>=p.h) n=p.n;
@@ -5458,25 +5459,33 @@ function fmtBoardTime(ts, who){
     : `${date} ${p(d.getHours())}时${p(d.getMinutes())}分`;
 }
 
-/* ⭕ 年月日跟随真实时间轴，只有「时段」是虚拟的。
-   做法：随机抽一个时段落到 anchor 那一天；若该时段已经过去
-   （比如现在是晚上却抽到「早上」），就整体顺延一天 —— 时段保留，日期自然前进。
-   这样既不会跳到几天后，也保证时间永远向前。 */
+/* ⭕ 彼的时间 = 真实的「日期」+ 随机的「时段」，两者互不干涉。
+   —— 时刻刻意不去做任何对齐：不用晚于上一条、不用避开深夜、不管现在几点，
+      六段里随便抽一段，落在 anchor 那一天就完事。
+   —— 因为先后不由 ts 决定（看 _cmtRealTs 的 arriveAt），ts 只负责回答「大概什么时候」。 */
 function _nextBoardTs(anchor){
-  const prev = anchor || Date.now();
+  const d = new Date(anchor || Date.now());       // ⭕ 日期跟着真实时间轴走
   const pi = Math.floor(Math.random()*BOARD_DAY_PARTS.length);
   const end = (BOARD_DAY_PARTS[pi+1] || {h:24}).h;
-  const d = new Date(prev);
-  d.setHours(BOARD_DAY_PARTS[pi].h + Math.floor(Math.random()*Math.max(1,end-BOARD_DAY_PARTS[pi].h)),
-             Math.floor(Math.random()*60), 0, 0);
-  let t = d.getTime();
-  while(t <= prev) t += 86400000;
-  return t;
+  d.setHours(BOARD_DAY_PARTS[pi].h + Math.floor(Math.random()*Math.max(1, end-BOARD_DAY_PARTS[pi].h)),
+             Math.floor(Math.random()*60), 0, 0); // ⭕ 时段与分钟纯随机
+  return d.getTime();                              // ⭕ 不再往后追、不再跨天
 }
-/** 帖子里的最后一条时间（没有评论就是帖子本身），给下一条回复当锚点 */
+/** ⭕ 一条回复的「真实先后」：彼的用到达时刻 arriveAt，我的用发送时刻 ts ——
+    两者都在同一条真实时间轴上，可以直接比大小 */
+function _cmtRealTs(c){ return Number(c&&c.arriveAt) || Number(c&&c.ts) || 0; }
+/** ⭕ 渲染前统一按真实先后排序。
+    之前只按数组插入顺序排：彼回复末尾排过一次（还是按虚拟 ts），我回复后却直接 push 到末尾，
+    于是「我刚发的」反而排在彼那些虚拟未来时间之后，楼层号跟着错位。 */
+function _commentsOf(post){
+  return (post&&Array.isArray(post.comments) ? post.comments : [])
+    .slice().sort((a,b)=>_cmtRealTs(a)-_cmtRealTs(b));
+}
+/** 帖子里的最后一条虚拟时间（给下一条彼回复当锚点）。
+    ⭕ 取最大值而不是数组末元素 —— 我插在末尾的是真实时间，会把锚点拽回过去 */
 function _lastTsIn(post){
   const cs = post.comments||[];
-  return cs.length ? cs[cs.length-1].ts : post.ts;
+  return cs.length ? Math.max.apply(null, cs.map(c=>Number(c.ts)||0)) : post.ts;
 }
 /** 彼的内容带 arriveAt（真实时刻），没到点就不显示 —— 彼不会秒回 */
 function _arrived(x, now){ return !x.arriveAt || x.arriveAt <= (now||Date.now()); }
@@ -5526,7 +5535,7 @@ function renderBoard(){
   list.innerHTML=vis.map((p,i)=>{
     /* ⭕ 群聊模式下这条可能由某个成员发出，名字和头像都按发言人取 */
     const nm=_boardWhoOf(p), av=_boardAvatar(p), isOpp=p.who==="opp";
-    const cs=(p.comments||[]).filter(c=>_arrived(c,now));
+    const cs=_commentsOf(p).filter(c=>_arrived(c,now));
     const unread=cs.filter(c=>c.who==="opp"&&!c.read).length;
     const foldable = p.text.length>BOARD_FOLD_LEN || p.text.includes("\n");
     return `<div class="board-post${isOpp?" opp":""}${foldable?" foldable":""}" onclick="openBoardPost('${p.id}')">
@@ -5570,7 +5579,7 @@ function renderBoardDetail(){
   const now=Date.now();
   /* ⭕ 重绘会重建输入框，先把草稿捞回来 —— 否则一点「引用」输入到一半的话就没了 */
   const oldBox=document.getElementById("boardCmtInput"), draft=oldBox?oldBox.value:"";
-  const cs=(p.comments||[]).filter(c=>_arrived(c,now));
+  const cs=_commentsOf(p).filter(c=>_arrived(c,now));
   wrap.innerHTML=`
     <div class="bd-head">
       <button class="bd-back" onclick="closeBoardPost()">‹ 返回</button>
@@ -5669,6 +5678,8 @@ window.sendBoardComment = ()=>{
   const p=msgs.find(x=>x.id===boardOpenId); if(!p) return;
   p.comments=p.comments||[];
   p.comments.push({id:"bc"+Date.now()+Math.floor(Math.random()*1000), who:"self", text:t, ts:Date.now(), quote:boardQuote||null, read:true});
+  /* ⭕ 按真实先后落位：不然这条会永远占着数组末尾，楼层号跟着乱 */
+  p.comments.sort((a,b)=>_cmtRealTs(a)-_cmtRealTs(b));
   boardQuote=null;
   box.value="";
   renderBoardDetail(); renderBoard(); saveAllDebounced();
@@ -5689,7 +5700,7 @@ function scheduleBoardComments(postId){
     /* ⭕ 引用源 = 帖子本身 + 最近 3 条回复 —— 所以既可能回应我，
        也可能接着自己上一条继续补充 */
     const pool=[{id:p.id, who:_boardWhoOf(p), text:p.text}]
-      .concat((p.comments||[]).slice(-3).map(c=>({id:c.id, who:_boardWhoOf(c), text:c.text})));
+      .concat(_commentsOf(p).slice(-3).map(c=>({id:c.id, who:_boardWhoOf(c), text:c.text})));
     let quote=null;
     if(Math.random()<BOARD_QUOTE_CHANCE){
       const tgt=pool[Math.floor(Math.random()*pool.length)];
