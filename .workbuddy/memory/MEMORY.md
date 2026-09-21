@@ -59,7 +59,16 @@
 - 图片一律走 base64 存 IndexedDB；各键有 `IMG_SPEC` 压缩规格
   （`_compressAvatar` / `_squeezeDataUrl`；头像 240px / q0.72）
 - 聊天消息**不存头像**（`_addChatMsg` 删 `msg.avatar`，`_stripChatMedia` / 备份同样剥掉）
+- ⛔ **画作消息靠 `painterSeed` 现场重绘，不是 base64** —— 剥媒体时**绝不能删**
+  `painter` / `painterSeed`（删了跨设备就退化成 `[画作]` 纯文本气泡，见 v1.14.1）
 - 聊天渲染是**窗口化**的：`INITIAL_RENDER=150` / `LOAD_BATCH=80` / `CHAT_MAX=2000`
+
+## 同步时"剥媒体"的边界（踩过两次同一个坑）
+判断某字段该不该剥，标准是**它是不是媒体本体**，不是"看起来像不像大字段"：
+- ✅ 该剥：`image`（聊天图片 base64，30–80KB）、`avatar`（每份 330KB 的重复副本）
+- ⛔ **不能剥**：`painterSeed`（70B 的种子，**种子即内容**）、`stickerId`（短引用锚点）
+→ **判据 = 剥了之后渲染层还认不认得出这条消息的类型**（`_msgKind` 依赖这些布尔标记）。
+  删掉标记 = 类型信息丢失 = 退化成纯文本气泡。**删之前先想清楚渲染读什么。**
 
 ## 云同步约定
 - 浏览器直连 `api.github.com`（支持 CORS，无后端）+ 私有仓库 `fcylz/cy-moon-data`(main) + fine-grained PAT。
