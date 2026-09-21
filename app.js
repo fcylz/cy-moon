@@ -50,6 +50,10 @@ window.DEFAULTS = {
     syncRepo:"fcylz/cy-moon-data", syncBranch:"main", syncToken:"",
     syncAuto:true,      // 自动推送（数据变动后延迟 30s）
     syncMedia:false,    // 是否连图片/音效一起同步（体积大、易超限，默认关）
+    /* ⭕ v1.15.0：聊天图片单独一路，**独立于 syncMedia**、默认关。
+       开之前两台设备都该升到同一版本（旧版认不出 imgId 消息）。
+       关着时对面的图片消息显示占位图 —— 文字与结构照常同步。 */
+    syncChatImgs:false,
     syncLastPush:0, syncLastPull:0, syncShas:{},
     cloudMusicLastSync:0, cloudCardLastSync:0, cloudStickerLastSync:0, cloudDictLastSync:0, cloudCharLastSync:0, cloudXhyLastSync:0, activeSoundId:"__builtin_thud1__",
 customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolarBg:false,minimaxKey: "", minimaxVoice: "male-qn-qingse", autoTTS: false,ttsUrl: "https://api.minimax.chat/v1/t2a_v2",
@@ -119,9 +123,21 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.14.2";
+const APP_VERSION = "1.15.0";
 const APP_BUILD   = "2026-09-21";
 const APP_CHANGELOG = [
+  { v:"1.15.0", d:"2026-09-21", items:[
+    "新增：聊天图片可以跨设备同步了（云同步面板新增独立开关「同步聊天图片」，默认关）",
+    "🏗 数据结构变更：新增 IndexedDB 键 chatImgs（{imgId: base64}）；消息新增 imgId 字段，图片从「内嵌」改为「按 id 独立寻址」",
+    "🏗 迁移函数 _migrateChatsExtractImages（幂等）：自动把老消息里内嵌的 image 挪进 chatImgs，消息只留短 id",
+    "云同步：每张图独立成文件 chatimg-<id>.json，绕开 GitHub 1MB 单文件硬限；只传被消息引用的图，孤儿图不上云",
+    "合并拉取：chatImgs 永远取并集，连「强制拉取」也不例外 —— 避免覆盖时丢掉本机独有的图",
+    "单张图片超过 900KB 会跳过并提示，不让整次推送失败",
+    "渲染兼容：_msgKind / 引用预览 / 引用缩略图同时认 m.image（老数据）与 m.imgId（新数据）",
+    "图片查不到时显示**占位图**（可点开）而不是退化成文字气泡",
+    "⚠ 两台设备都要升到 1.15.0 之后再打开这个开关（旧版认不出 imgId 消息）",
+    "⚠ 应急备份（localStorage）不包含 chatImgs，恢复后图片显示占位图 —— 完整图片请用「导出备份」",
+  ]},
   { v:"1.14.2", d:"2026-09-21", items:[
     "修复：合并拉取时，若本机已有一条被剥过媒体的残缺消息，云端完整版永远进不来（画作/图片/表情在对面永久定格为占位符）",
     "原因：v1.14.0 的「同键本机优先」是无条件的——它挡住了旧数据覆盖，也顺手挡住了「云端来补齐本机缺的媒体」",
@@ -224,6 +240,26 @@ function _migrateChatsDropAvatar(){
       if(g && g.id) m.memberId=g.id;
     }
     delete m.avatar; dirty=true;
+  }
+  return dirty;
+}
+/* ⭕ v1.15.0 生成图片 id：时间戳（36 进制）+ 自增序号，同一毫秒也不会撞。
+   不用纯随机是为了让 id 天然按时间有序，便于人工排查。 */
+function _genImgId(){ _ciSeq=(_ciSeq+1)%1e6; return "ci"+Date.now().toString(36)+"-"+_ciSeq.toString(36); }
+/* ⭕ v1.15.0 一次性迁移：把老消息里**内嵌的** image base64 挪进 chatImgs，消息只留 imgId。
+   动机：v1.14.x 及以前图片死在 m.image 里，同步时只能整条 `delete c.image` → 跨设备变 [图片消息]。
+   挪出来之后，图片成了"独立可寻址的资源"，才能按 imgId 单独同步、单独回填。
+   幂等：**消息里没有 m.image 就完全不动作**（已迁过的、纯文本/画作/表情消息都不受影响）。
+   不改 m.text / m.ts / m.mid —— 只搬运 image 字段本身。 */
+function _migrateChatsExtractImages(){
+  let dirty=false;
+  for(const m of chats){
+    if(!m || !m.image) continue;
+    const id = m.imgId || _genImgId();
+    chatImgs[id] = m.image;   /* 先存库再删，任何一步失败都不会把图弄丢 */
+    m.imgId = id;
+    delete m.image;
+    dirty = true;
   }
   return dirty;
 }
@@ -345,6 +381,11 @@ let shieldedCats=[], selected=[], foldedCats=[], anniversaries=[], carousel=[];
 let surveys=[], surveyRecords=[], surveyFill=null, editingSurvey=null, editingSurveyIsNew=false;
 /* ⭕ 留言板：{id, who:"self"|"opp", text, ts, quote:{id,who,text}|null, read:bool} */
 let msgs=[];
+/* ⭕ v1.15.0：聊天图片库 { imgId: "data:image/jpeg;base64,..." }。
+   图片从"内嵌在消息里"改为"按 imgId 独立寻址" —— 这样才能在云同步时
+   只传被引用的图（`_referencedChatImgs`），并让每张图独立成一个文件绕开 1MB 上限。 */
+let chatImgs={};
+let _ciSeq=0;   /* imgId 自增序号，避免同一毫秒内生成重复 id */
 let activeTimer=null, replyTimer=null, typingNode=null, currentApp=null;
 let openTrans=new Set(), pendingQuote=null, pendingQuoteFrom="";
 
@@ -476,7 +517,8 @@ async function init() {
     const b = await dbGetBatch([
       ["cfg",{}],["imgs",{}],["texts",{}],["cards",null],["chats",[]],
       ["members",null],["sounds",[]],["shieldedCats",[]],["foldedCats",[]],
-      ["anniversaries",null],["carousel",[]],["surveys",null],["surveyRecords",[]],["stickers",[]],["msgs",[]]
+      ["anniversaries",null],["carousel",[]],["surveys",null],["surveyRecords",[]],["stickers",[]],["msgs",[]],
+      ["chatImgs",{}]   /* ⭕ v1.15.0：聊天图片独立寻址 { imgId: base64 }，消息里只留 imgId */
     ]);
     cfg           = Object.assign({}, window.DEFAULTS.cfg, b.cfg);
     imgs          = Object.assign({}, window.DEFAULTS.imgs, b.imgs);
@@ -493,11 +535,15 @@ async function init() {
     surveyRecords = b.surveyRecords || [];
     stickers      = b.stickers    || [];
     msgs          = b.msgs        || [];
+    chatImgs      = b.chatImgs    || {};   /* ⭕ v1.15.0 */
     normalizeMsgs(); /* ⭕ 老数据（扁平留言）迁成「帖子 + 评论」两层 */
     /* ⭕ 老数据补 mid（只会在首次升级时写一次） */
     if(_migrateChatsMid()) saveAllDebounced();
     /* ⭕ 老数据里每条消息内嵌的头像 base64 只清一次 —— 首次升级后 chats 从几 MB 掉到几十 KB */
     if(_migrateChatsDropAvatar()) saveAllDebounced();
+    /* ⭕ v1.15.0：把老消息里**内嵌的图片 base64** 挪进 chatImgs，消息只留 imgId。
+       幂等：消息里没有 image 就完全不动作。必须排在下面所有渲染之前。 */
+    if(_migrateChatsExtractImages()) saveAllDebounced();
   } catch(e){ console.warn(e); }
 
   document.getElementById("dockL1").innerHTML = DOCK_HTML;
@@ -593,7 +639,7 @@ function _cheapSig(v, depth){
      改在非采样点上就抓不到，后果是"已读状态不落盘"。要收它得给原地修改加脏标记，
      那是另一件事，不混进这版。
    其余（cfg / texts / cards / surveys …）又小又常改，全量写。 */
-const HEAVY_KEYS = ["imgs","carousel","sounds","stickers","chats","members"];
+const HEAVY_KEYS = ["imgs","carousel","sounds","stickers","chats","members","chatImgs"];
 const _lastSig = {};   /* 进程内记住上次**实际落盘**的签名；刷新页面后为空 → 首存必全量写，安全 */
 
 async function saveAll() {
@@ -604,7 +650,7 @@ async function saveAll() {
         cfg, imgs, texts, cards, chats,
         members: groupMembers, sounds,
         shieldedCats, foldedCats, anniversaries, carousel,
-        surveys, surveyRecords, stickers, msgs
+        surveys, surveyRecords, stickers, msgs, chatImgs
       };
       const writes = [];
       for (const [k, v] of Object.entries(data)) {
@@ -645,7 +691,13 @@ let _backupTimer = null;
 function _sanitizeMsgsForBackup(msgs){
   return msgs.slice(-BACKUP_MSG_MAX).map(m=>{
     const c = Object.assign({}, m);
+    /* ⭕ v1.15.0：图片本体已挪到 chatImgs（消息里只有 imgId 这个短 id），所以这里
+       不该再删任何东西 —— imgId 是**引用锚点**，跟 stickerId 同类。
+       真要看图得靠 chatImgs，而应急备份**不备份 chatImgs**（base64 会撑爆 localStorage），
+       恢复后图片显示占位图 —— 这是刻意的取舍：应急备份只保证"文字不丢"。
+       兼容老数据：万一还有内嵌的 m.image，仍然剥掉（那是真的 base64）。 */
     if(c.image){ c.text = c.text || "[图片消息]"; delete c.image; }
+    if(c.imgId){ c.text = c.text || "[图片]"; }
     /* ⭕ 保留 sticker / stickerId：它们只是引用锚点（布尔 + 短 id），不是媒体本体。
        删掉的话恢复出来的聊天里，表情消息会认不出类型、引用行也定位不到原表情。 */
     if(c.sticker){ c.text = c.text || "[表情包]"; }
@@ -720,6 +772,9 @@ function tryRestoreBackup(){
   if(bk.surveys) surveys = bk.surveys;
   if(bk.surveyRecords) surveyRecords = bk.surveyRecords;
   if(bk.msgs){ msgs = bk.msgs; normalizeMsgs(); }
+  /* ⚠ v1.15.0 已知行为：应急备份**不含 chatImgs**（base64 会撑爆 localStorage），
+     所以恢复出来的图片消息只有 imgId、没有图 → 聊天里显示**占位图**（不是文字气泡）。
+     真要恢复完整图片请用「数据 → 导入备份」（fullExport 走的是完整导出）。这是刻意的取舍。 */
   if(Array.isArray(bk.chats)){ chats = bk.chats; markStatsDirty(); }
   syncUI(); renderChats(); renderBoard();
   saveAll().then(()=>toast("已从备份恢复"));
@@ -1196,8 +1251,12 @@ async function onPickImg(e){
     imgPickKey="";
     const r = await _compressImg(f, 400, 0.65);
     if(!r) return;
+    /* ⭕ v1.15.0：图先进 chatImgs 拿一个 imgId，消息里只留这个 id（不再内嵌 base64）。
+       这样云同步可以按 imgId 单独传图、单独回填，而消息本身保持很小。 */
+    const imgId = _genImgId();
+    chatImgs[imgId] = r.data;
     const now=new Date();
-    _addChatMsg({sender:"self",text:"[图片]",image:r.data,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),...(pendingQuote?{quote:pendingQuote}:{})});
+    _addChatMsg({sender:"self",text:"[图片]",imgId,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),...(pendingQuote?{quote:pendingQuote}:{})});
     window.clearPendingQuote();
     saveAllDebounced(); appendNewChats();
     const cf=document.getElementById("chatFlow"); if(cf) cf.scrollTop=cf.scrollHeight;
@@ -1580,7 +1639,7 @@ function quoteLineHtml(q){
   if(tgt){
     /* ⭕ 缩略图带 data-view：点缩略图直接看原图（比"跳过去再看"少一步），
        点引用行其余区域才是跳到原消息 —— 见 bindChatDelegation 的 click 分支。 */
-    if(kind==="image")       { thumb=`<img class="qthumb" data-view="1" src="${escapeHtml(tgt.image)}" alt="" title="点击查看原图" onerror="this.style.display='none'">`; txt="[图片]"; }
+    if(kind==="image")       { thumb=`<img class="qthumb" data-view="1" src="${tgt.image?escapeHtml(tgt.image):resolveChatImg(tgt.imgId)}" alt="" title="点击查看原图" onerror="this.style.display='none'">`; txt="[图片]"; }
     else if(kind==="sticker"){ thumb=`<img class="qthumb round" data-view="1" src="${escapeHtml(resolveStickerSrc(tgt.stickerId))}" alt="" title="点击查看原图" onerror="this.style.display='none'">`; txt="[表情包]"; }
     else if(kind==="painter"){ txt="[画作]"; }
     else if(kind==="song")   { txt="♪ "+(tgt.songName||"未知曲目"); }
@@ -1641,9 +1700,12 @@ function _buildMsgRow(m, idx, ctx){
   const transClass=openTrans.has(idx)?"show":"";
   const bodyHtml = m.sticker
     ? `<img class="sticker-msg clickable-media" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.src='${window.DEFAULTS.PH_SVG}'">`
-    /* ⭕ 图片消息：用户上传 / bot 随机发的独立图片消息类型（data:image/jpeg;base64,..） */
-    : m.image
-    ? `<img class="image-msg clickable-media" data-idx="${idx}" src="${escapeHtml(m.image)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.parentElement.classList.add('img-broken')">`
+    /* ⭕ 图片消息：用户上传 / bot 随机发的独立图片消息类型。
+       v1.15.0 起图存 chatImgs、消息只留 imgId；老数据仍可能是内嵌的 m.image —— 两种都认。
+       查不到图（例如同步还没把图带过来）时 resolveChatImg 返回 PH_SVG 占位图，
+       ⛔ 而不是退化成文字 —— 占位图能点开、能看出"这里本来有张图"，比灰字气泡有用。 */
+    : (m.image || m.imgId)
+    ? `<img class="image-msg clickable-media" data-idx="${idx}" src="${m.image?escapeHtml(m.image):resolveChatImg(m.imgId)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.parentElement.classList.add('img-broken')">`
     /* ⭕ painter 画作消息：iframe 嵌入远端 cy-painter，透传 seed/auto=1/embed=1/mode=chat */
     : m.painter
     /* ⭕ click 透传 seed → 弹窗复用同一个 iframe（同源 URL，无需额外请求/存储） */
@@ -1703,6 +1765,10 @@ function _chatViewSigNow(){
     cfg.showRead?1:0, cfg.showSelfRead?1:0,
     cfg.chatStyle||0, cfg.groupMode?1:0,
     cfg.tradTransOn?1:0, cfg.painterOn?1:0,
+    /* ⭕ v1.15.0：chatImgs 的**条目数**也要进签名。
+       否则"图片到了但 chats 数组没变"（同步补图、或强拉补图）时签名相同 →
+       切进聊天页会复用旧 DOM，图还停在占位图上，直到下次重建才出现。 */
+    Object.keys(chatImgs).length,
     texts.readText||"",
   ].join("|");
 }
@@ -2153,7 +2219,7 @@ function applyPendingQuoteUI(){
   const tp=document.getElementById("qpThumb");
   let src="", summary=qi.text||"";
   if(m){
-    if(kind==="image")        { src=m.image; summary="[图片]"; }
+    if(kind==="image")        { src=m.image || resolveChatImg(m.imgId); summary="[图片]"; }
     else if(kind==="sticker") { src=resolveStickerSrc(m.stickerId); summary="[表情包]"; }
     else if(kind==="painter") { summary="[画作]"; }
     else if(kind==="song")    { summary="♪ "+(m.songName||"未知曲目"); }
@@ -3052,7 +3118,7 @@ window.refreshCloudXhy=async()=>{
 const SYNC_API="https://api.github.com/repos/";
 const SYNC_CHUNK=820*1024;      // 单片上限（字符数），留出 base64 膨胀 33% 的余量
 const SYNC_DIR="_sync/";
-let _syncBusy=false, _syncPushTimer=null;
+let _syncBusy=false, _syncPushTimer=null, _syncSkipImgs=0;
 
 /* btoa 直接吃中文会抛错 —— 先 UTF-8 编码成字节流再转 */
 function _b64e(s){
@@ -3107,7 +3173,21 @@ function _syncBundles(includeMedia){
     stickers:includeMedia?stickers:stickers.filter(s=>s.type==="url")
   };
   if(includeMedia){ b.imgs=imgs; b.sounds=sounds; b.carousel=carousel; }
+  /* ⭕ v1.15.0 聊天图片：**独立于 syncMedia** 的一路。
+     只传「被消息真正引用到的」那部分 —— 用户删过消息留下的孤儿图不上云，控制体积、
+     也避免孤儿图永久驻留。走单独的文件命名（chatimg-<id>.json），见 pushSync。 */
+  if(cfg.syncChatImgs) b.chatImgs = _referencedChatImgs();
   return b;
+}
+/* ⭕ 只取「还被消息引用着的」聊天图片。
+   chatImgs 是只增不减的库（删消息不会自动清图），全量上传既浪费又会让云端历史越滚越大。
+   判据 = 消息里存在该 imgId。 */
+function _referencedChatImgs(){
+  const used = new Set();
+  for(const m of (Array.isArray(chats)?chats:[])){ if(m && m.imgId) used.add(m.imgId); }
+  const out = {};
+  for(const id of used){ if(chatImgs[id]) out[id] = chatImgs[id]; }
+  return out;
 }
 /* ⭕ 只把"用户设置"同步出去。令牌、以及本机的同步状态（sha 表 / 上次推拉时间）都是
    **本机私有**的 —— 同步出去等于让另一台设备的同步状态覆盖过来，
@@ -3121,7 +3201,13 @@ function _syncCfgOut(){
 function _stripChatMedia(list){
   return (list||[]).map(m=>{
     const c=Object.assign({},m);
+    /* ⭕ v1.15.0：图片本体已经不在这里了 —— 发送时就把 base64 存进 chatImgs，
+       消息只留 `imgId`（短 id，**是引用锚点，必须保留**，同类于 stickerId）。
+       所以下面这行只对"老数据里还没迁移掉的内嵌 image"生效。
+       ⛔ 千万别顺手删 imgId：删了 _msgKind 认不出图片，整条退化成纯文本气泡，
+          而且再也定位不到 chatImgs 里那张图 —— 正是 v1.14.x 那个坑的翻版。 */
     if(c.image){ c.text=c.text||"[图片消息]"; delete c.image; }
+    if(c.imgId){ c.text=c.text||"[图片]"; }
     /* ⭕ 表情包消息**只留引用锚点**：sticker:true 是个布尔、stickerId 是个短 id，俩加起来几十字节。
        真正的 base64 在 stickers 数组里（上一行已按 type 过滤），跟消息无关。
        原来把这两个字段一起删掉是错的：_msgKind 认不出它是表情 → 引用行退化成纯文本，
@@ -3265,6 +3351,12 @@ function _syncApply(b, opt){
   if(b.imgs && cloudNewer) imgs = b.imgs;
   if(b.sounds) sounds = take(sounds, b.sounds, _mergeById);
   if(b.carousel) carousel = take(carousel, b.carousel, _mergeById);
+  /* ⭕ v1.15.0 聊天图片：**永远并集，force 也不例外**。
+     理由：图片是只增不减的资源（imgId 一旦生成就只被引用，不会被改写），
+     并集不会产生冲突；而 force 覆盖会**丢掉本机独有的图** ——
+     那正是"强制拉取后本机图片全变占位图"这种不可逆事故。
+     语义上 force 是"对齐云端的文本/结构"，不是"删掉我的图"。 */
+  if(b.chatImgs) chatImgs = Object.assign({}, chatImgs, b.chatImgs);
 }
 function _syncRefreshUI(){
   try{ syncUI(); }catch(e){}
@@ -3281,7 +3373,26 @@ window.pushSync=async(auto)=>{
     const bundle=_syncBundles(!!cfg.syncMedia);
     const manifest={ts:Date.now(),files:{}};
     let count=0;
+    /* ⭕ v1.15.0：聊天图片**一张一个文件**，不走 _syncParts。
+       原因：_syncParts 只对**数组**分片，chatImgs 是对象 → 会挤进单个 chatImgs.json，
+       几十张图 = 几 MB，必撞 GitHub contents API 的 1MB 硬限制，整次推送直接失败。
+       改成 chatimg-<id>.json 后天然不撞限，且某张图失败也不牵连其他图。
+       manifest.files.chatImgs 记的是文件名数组，拉取端按 chatimg- 前缀反解 id。 */
+    const chatImgFiles=[];
     for(const [name,val] of Object.entries(bundle)){
+      if(name==="chatImgs"){
+        for(const [id,data] of Object.entries(val||{})){
+          const text=JSON.stringify(data);
+          /* ⭕ 单张图超 900KB 就跳过（**不让它失败整次推送**），并累计提示。
+             压缩规格是 400px/q0.65（通常 30–80KB），正常永远碰不到这条。 */
+          if(text.length > 900*1024){ _syncSkipImgs++; continue; }
+          const file="chatimg-"+id+".json";
+          await _ghPutFile(file,text,branch,shas);
+          chatImgFiles.push(file); count++;
+        }
+        manifest.files.chatImgs=chatImgFiles;
+        continue;
+      }
       const parts=_syncParts(name,val);
       for(const p of parts){
         await _ghPutFile(p.file,p.text,branch,shas);
@@ -3292,7 +3403,8 @@ window.pushSync=async(auto)=>{
     const mr=await _ghPutFile("index.json",JSON.stringify(manifest),branch,shas);
     void mr;
     cfg.syncLastPush=Date.now(); await saveAll();
-    _syncStatus(`已推送 ${count} 个文件 · ${new Date().toLocaleTimeString()}`);
+    if(_syncSkipImgs){ _syncStatus(`已推送 ${count} 个文件（${_syncSkipImgs} 张图片过大被跳过）`); if(!auto) toast(`${_syncSkipImgs} 张图片超过 900KB 已跳过`,"warn"); _syncSkipImgs=0; }
+    else _syncStatus(`已推送 ${count} 个文件 · ${new Date().toLocaleTimeString()}`);
     if(!auto) toast("已推送到云端","ok");
     return true;
   }catch(e){
@@ -3335,9 +3447,24 @@ window.pullSync=async(auto, force)=>{
     const manifest=JSON.parse(_b64d(mf.content));
     shas[SYNC_DIR+"index.json"]=mf.sha;
     const bundle={};
+    /* ⭕ v1.15.0：聊天图片是「一张一个文件」，要单独收拢回一个对象。
+       文件名形如 chatimg-ci123-.json → 去掉前缀和 .json 就是 imgId。
+       manifest.files.chatImgs 存的是这些文件名的数组。 */
+    const chatImgsObj={};
     for(const [name,info] of Object.entries(manifest.files||{})){
       /* ⭕ manifest.files[name] 存的是分片文件名数组；也兼容 {parts:[...]} 写法 */
       const names=Array.isArray(info)?info:((info&&info.parts)||[]);
+      if(name==="chatImgs"){
+        for(const f of names){
+          try{
+            const r=await _gh(SYNC_DIR+f,"GET");
+            const id=f.replace(/^chatimg-/,"").replace(/\.json$/,"");
+            chatImgsObj[id]=JSON.parse(_b64d(r.content));
+            shas[SYNC_DIR+f]=r.sha;
+          }catch(e){ /* 单张图读失败不该拖垮整次拉取 —— 跳过，其余照常 */ }
+        }
+        continue;
+      }
       const parts=[];
       for(const f of names){
         const r=await _gh(SYNC_DIR+f,"GET");
@@ -3345,6 +3472,7 @@ window.pullSync=async(auto, force)=>{
       }
       bundle[name]=parts.length>1?parts.flatMap(t=>JSON.parse(t)):JSON.parse(parts[0]);
     }
+    if(Object.keys(chatImgsObj).length) bundle.chatImgs=chatImgsObj;
     _syncApply(bundle, {force:!!force, ts:manifest.ts});
     cfg.syncLastPull=Date.now(); await saveAll();
     _syncRefreshUI();
@@ -3425,6 +3553,10 @@ window.openSyncSettings=()=>{
       <span>连图片音效一起同步 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">体积大、易超限</span></span>
       <div class="sw" id="sw_syncMedia" onclick="cfgToggle('syncMedia')"><div class="sw-indicator"></div></div>
     </div>
+    <div class="stoggle-row">
+      <span>同步聊天图片 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">独立开关 · 首次开启会补齐历史图</span></span>
+      <div class="sw" id="sw_syncChatImgs" onclick="cfgToggle('syncChatImgs')"><div class="sw-indicator"></div></div>
+    </div>
     <div id="syncStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:8px 0 6px;">${
       (cfg.syncLastPush||cfg.syncLastPull)
         ? `上次推送 ${cfg.syncLastPush?new Date(cfg.syncLastPush).toLocaleString():"从未"} · 上次拉取 ${cfg.syncLastPull?new Date(cfg.syncLastPull).toLocaleString():"从未"}`
@@ -3446,11 +3578,17 @@ window.openSyncSettings=()=>{
       推送报"云端已被其他设备改过"时：<b>本机是最新 → 强制推送；云端是最新 → 合并云端数据</b>。
     </div>
     <div style="margin-top:8px;font-size:calc(var(--fs)*.68);color:var(--text-mute);">
-      ⚠ 单文件超过 1MB 会因 GitHub API 限制失败；图片/音效默认不同步，聊天里的图片会以 [图片消息] 占位。
+      ⚠ 单文件超过 1MB 会因 GitHub API 限制失败；图片/音效默认不同步。<br>
+      🖼 <b>「同步聊天图片」是独立开关</b>：打开后聊天图片会随同步走（聊天里的图能看到）。
+      <b>首次打开会一次性上传全部历史图片，可能产生一次较大的云端提交</b>，
+      之后只传新增的那几张。单张超过 900KB 的会跳过并提示。<br>
+      ⚠ 开关关闭时，对面的图片消息显示为占位图（不是文字）。
+      <b>两台设备都升到同一版本之后再打开它</b> —— 旧版本拉到新格式的图片消息会认不出类型。
     </div>`;
   modal("云同步", html);
   setSw("sw_syncAuto", !!cfg.syncAuto);
   setSw("sw_syncMedia", !!cfg.syncMedia);
+  setSw("sw_syncChatImgs", !!cfg.syncChatImgs);
 };
 
 async function fireReply(){
@@ -3611,7 +3749,7 @@ function _addChatMsg(msg) {
         而不是「是否生成译文」—— 译文始终会生成并存档，所以简体为主的那些消息
         点击后照样能展开繁体。想彻底不要繁体，关掉 tradTransOn 总开关。 */
   if(msg.sender==="opp" && cfg.tradTransOn && msg.text && !msg.translation
-     && !msg.sticker && !msg.image && !msg.painter && !msg.song){
+     && !msg.sticker && !msg.image && !msg.imgId && !msg.painter && !msg.song){
     const t=s2t(msg.text);
     /* tradAuto：这条译文是自动转换来的（而非用户手写），渲染时才知道繁体能否提为正文 */
     if(t && t!==msg.text){
@@ -4059,6 +4197,10 @@ function onPickSticker(e){
   });
 }
 function resolveStickerSrc(id){ const s=stickers.find(x=>x.id===id); return s ? (s.cachedSrc || s.src) : window.DEFAULTS.PH_SVG; }
+/* ⭕ v1.15.0：按 imgId 取聊天图片。查不到（同步未带图 / 图被清）→ 返回 PH_SVG 占位图。
+   ⛔ 必须返回一个**可用的 src**，不能返回 undefined/空串 —— 否则 <img> 会走 onerror，
+   给容器挂上 img-broken，表现成"图裂"而不是"待同步"的中性占位。 */
+function resolveChatImg(id){ const d=chatImgs[id]; return d || window.DEFAULTS.PH_SVG; }
 
 /* 外部 URL 贴纸首次加载成功后，canvas 转 base64 缩略图缓存，后续不依赖外链 */
 function _cacheStickerThumbnailById(id) {
@@ -4356,11 +4498,11 @@ function tally(arr){ const m={}; arr.forEach(t=>{if(!t)return;m[t]=(m[t]||0)+1;}
 
 // ─── Backup ───
 window.openBackup = ()=>{ modal("数据",`<div class="pill-btn-group"><button class="pill-btn" onclick="fullExport()">导出备份</button><button class="pill-btn" onclick="document.getElementById('fpJson').click();closeModal();">导入备份</button></div>`); };
-window.fullExport = ()=>{ /* ⭕ 必须剔除本机令牌：备份文件一旦外发（发群/云盘/进仓库），syncToken 就泄露了 */ const data={cfg:_syncCfgOut(),texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds,surveys,surveyRecords,stickers,msgs}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
+window.fullExport = ()=>{ /* ⭕ 必须剔除本机令牌：备份文件一旦外发（发群/云盘/进仓库），syncToken 就泄露了 */ const data={cfg:_syncCfgOut(),texts,cards,chats,members:groupMembers,shieldedCats,foldedCats,anniversaries,carousel,imgs,sounds,surveys,surveyRecords,stickers,msgs,chatImgs}; const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"})); a.download=`SilentChamber_${Date.now()}.json`; a.click(); toast("备份完成"); closeModal(); };
 function onPickJson(e){
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
-  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); /* ⭕ 令牌是本机设置，导入备份不得覆盖它（与 _syncApply 的保护逻辑保持一致） */ if(d.cfg) cfg=Object.assign(cfg,d.cfg,{syncToken:cfg.syncToken}); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) {chats=d.chats; markStatsDirty();} if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; if(d.surveys) surveys=d.surveys; if(d.surveyRecords) surveyRecords=d.surveyRecords; if(d.stickers) stickers=d.stickers; if(d.msgs){ msgs=d.msgs; normalizeMsgs(); } await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); window.renderStickers(); renderCarousel(); renderMosaic(); renderSurveys(); closeBoardPost(); renderBoard(); toast("还原完毕"); }catch{ alert("数据损坏"); } };
+  r.onload=async ev=>{ try{ const d=JSON.parse(ev.target.result); /* ⭕ 令牌是本机设置，导入备份不得覆盖它（与 _syncApply 的保护逻辑保持一致） */ if(d.cfg) cfg=Object.assign(cfg,d.cfg,{syncToken:cfg.syncToken}); if(d.texts) texts=d.texts; if(d.cards) cards=d.cards; if(d.chats) {chats=d.chats; markStatsDirty();} if(d.members) groupMembers=d.members; if(d.shieldedCats) shieldedCats=d.shieldedCats; if(d.foldedCats) foldedCats=d.foldedCats; if(d.anniversaries) anniversaries=d.anniversaries; if(d.carousel) carousel=d.carousel; if(d.imgs) imgs=d.imgs; if(d.sounds) sounds=d.sounds; if(d.surveys) surveys=d.surveys; if(d.surveyRecords) surveyRecords=d.surveyRecords; if(d.stickers) stickers=d.stickers; if(d.msgs){ msgs=d.msgs; normalizeMsgs(); } if(d.chatImgs) chatImgs=d.chatImgs; /* ⭕ v1.15.0 导入完整备份（fullExport 产物）带 chatImgs，图直接可用 */ /* ⭕ 导入的若是**老备份**（图片还内嵌在 m.image 里），这里顺手搬运一次（幂等）。 新备份里消息只有 imgId，没有 image → 这个调用什么都不做。 */ try{ _migrateChatsExtractImages(); }catch(e){} await saveAll(); syncUI(); renderChats(); window.renderCards(); window.renderMembers(); window.renderStickers(); renderCarousel(); renderMosaic(); renderSurveys(); closeBoardPost(); renderBoard(); toast("还原完毕"); }catch{ alert("数据损坏"); } };
   r.readAsText(f);
 }
 window.factoryReset = async()=>{ if(!confirm("确认销毁并重置？")) return; clearBackup(); sessionStorage.removeItem("skip_backup_restore"); indexedDB.deleteDatabase(DB_NAME); setTimeout(()=>location.reload(),200); };

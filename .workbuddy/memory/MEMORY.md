@@ -8,9 +8,12 @@
 - 数据存 IndexedDB（`DB.transaction("kv")`），另有 localStorage 应急备份 `cy_moon_backup`
   （**只备份文本**，图片/贴纸/画作存占位 —— 这个"只同步文本"策略直接复用到云同步）
 - 无构建步骤，直接开 `index.html` 即可
-- 15 个键：`cfg/imgs/texts/cards/chats/members/sounds/shieldedCats/foldedCats/
-  anniversaries/carousel/surveys/surveyRecords/stickers/msgs`
-  ⚠ 改数据结构时四处（`dbGetBatch`/`saveAll`/`fullExport`/`onPickJson`）要同步
+- **16 个键**：`cfg/imgs/texts/cards/chats/members/sounds/shieldedCats/foldedCats/
+  anniversaries/carousel/surveys/surveyRecords/stickers/msgs/chatImgs`
+  ⚠ 改数据结构时**五处**（`dbGetBatch` / init 赋值 / `saveAll` / `fullExport` / `onPickJson`）要同步
+  （老笔记写"四处"漏了 init 赋值那一处，以五处为准）
+- `chatImgs`（v1.15.0）= 聊天图片库 `{imgId: base64}`，**对象不是数组**；
+  消息里只留 `imgId`（短 id），老数据内嵌的 `m.image` 由 `_migrateChatsExtractImages` 幂等搬过来
 
 ## 部署
 - 线上：GitHub Pages `https://fcylz.github.io/cy-moon/`，仓库 **`fcylz/cy-moon` 是 public**；
@@ -65,14 +68,28 @@
 
 ## 同步时"剥媒体"的边界（踩过两次同一个坑）
 判断某字段该不该剥，标准是**它是不是媒体本体**，不是"看起来像不像大字段"：
-- ✅ 该剥：`image`（聊天图片 base64，30–80KB）、`avatar`（每份 330KB 的重复副本）
-- ⛔ **不能剥**：`painterSeed`（70B 的种子，**种子即内容**）、`stickerId`（短引用锚点）
+- ✅ 该剥：`avatar`（每份 330KB 的重复副本）
+- ⛔ **不能剥**：`painterSeed`（70B 的种子，**种子即内容**）、`stickerId`（短引用锚点）、
+  **`imgId`**（v1.15.0 起图片的短引用锚点）
+- ⚠ `image` **已经不在这里了**：v1.15.0 起图片本体存 `chatImgs[imgId]`，
+  消息里只有 `imgId`。`if(c.image) delete c.image` 现在只对**没迁移掉的老数据**生效。
 → **判据 = 剥了之后渲染层还认不认得出这条消息的类型**（`_msgKind` 依赖这些布尔标记）。
   删掉标记 = 类型信息丢失 = 退化成纯文本气泡。**删之前先想清楚渲染读什么。**
 
+## 图片消息（v1.15.0 起）
+- 图存 `chatImgs[imgId]`，消息只留 `imgId`；`_migrateChatsExtractImages` 幂等迁移老数据
+- `resolveChatImg(id)` 查不到 → **返回 `PH_SVG` 占位图**（⛔ 不是文字气泡）
+- 同步：**每张图一个文件** `chatimg-<id>.json`（`_syncParts` 只对数组分片，对象会撞 1MB 硬限）
+- **`chatImgs` 永远并集，`force` 也不例外**（图是只增资源，覆盖 = 丢本机图，不可逆）
+- 独立开关 `syncChatImgs`（默认关，**独立于 `syncMedia`**）；只传 `_referencedChatImgs()`（孤儿图不上云）
+- ⚠ **`_chatViewSigNow` 必须计入 `Object.keys(chatImgs).length`** ——
+  否则"图到了但 chats 数组没变"时切进聊天页会复用旧 DOM，图停在占位图
+- ⚠ 应急备份（localStorage）**不含 chatImgs** → 恢复后图片显示占位图（刻意取舍，只保文字）；
+  完整图用 `fullExport`（含 chatImgs）
+
 ## 云同步约定
 - 浏览器直连 `api.github.com`（支持 CORS，无后端）+ 私有仓库 `fcylz/cy-moon-data`(main) + fine-grained PAT。
-  设置 → 云同步面板；`syncRepo/syncBranch/syncToken/syncAuto/syncMedia`
+  设置 → 云同步面板；`syncRepo/syncBranch/syncToken/syncAuto/syncMedia/syncChatImgs`
 - 默认**只同步文本**（图片/音效是 base64，易撞 1MB 上限 + 撑爆历史），`syncMedia` 可开
 - ⛔ contents API 单文件必须 ≤1MB（超出分片）；用 `sha` 做乐观锁检测多设备冲突
 - ⚠ 两个真实坑：①本地无 sha 而远端文件已存在 → PUT 需先 GET 取 sha，否则 422；
