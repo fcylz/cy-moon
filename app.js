@@ -123,9 +123,18 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.15.0";
+const APP_VERSION = "1.15.1";
 const APP_BUILD   = "2026-09-21";
 const APP_CHANGELOG = [
+  { v:"1.15.1", d:"2026-09-21", items:[
+    "修复：设置页开关（含云同步那三个）点下去反应迟钝 —— 要等 IndexedDB 写盘完成后才更新视觉",
+    "原因：老的写法是 `cfg=…; await saveAll(); syncUI();`，把 UI 更新排在等写盘之后，手机上要等几十~几百 ms",
+    "改为**乐观更新**：点下去立刻翻转开关（当帧生效），写盘改用防抖（连点多个开关只落一次盘）",
+    "云同步的三个开关（自动推送/图片音效/聊天图片）本就**不在 syncUI 里**，跳过全量同步，反馈更快",
+    "切布局 / 切主题 / 换字号 / 换气泡样式 / 换头像尺寸 同样受益（同一个根因，一并改）",
+    "顺带修：`sw_showSeconds`（对应 timeShowSeconds）与 `sw_autoTTS_adv`（对应 autoTTS）"
+      + "这两个开关 id 与配置名不同名，旧代码靠拼名字找不到元素；现在改从点击事件取元素",
+  ]},
   { v:"1.15.0", d:"2026-09-21", items:[
     "新增：聊天图片可以跨设备同步了（云同步面板新增独立开关「同步聊天图片」，默认关）",
     "🏗 数据结构变更：新增 IndexedDB 键 chatImgs（{imgId: base64}）；消息新增 imgId 字段，图片从「内嵌」改为「按 id 独立寻址」",
@@ -1038,23 +1047,76 @@ function applyAesBodyBg() {
 
 // ─── Config setters ───
 window.cfgSet    = async(k,v)=>{ cfg[k]=v; await saveAll(); syncUI(); };
-window.cfgToggle = async(k)=>{ cfg[k]=!cfg[k]; await saveAll(); syncUI(); if(k==="activeSend") scheduleActive(); if(document.getElementById("chatFlow")){ /* 仅聊天显示相关配置才需重建 DOM，避免非相关开关触犯全部重绘 */ const chatKeys=["showAvatar","showName","showSelfName","showTime","timeShowSeconds","oppCustomTime","showRead","showSelfRead","readText"]; if(chatKeys.includes(k)) renderChats(); } };
-window.setLayout = async(v)=>{ cfg.layout=+v; await saveAll(); syncUI(); document.querySelectorAll(".tab-switch .ts-opt[data-v]").forEach(el=>el.classList.toggle("active",+el.dataset.v===cfg.layout)); };
-window.setTheme  = async(v)=>{ cfg.theme=v; await saveAll(); syncUI(); document.querySelectorAll(".tab-switch .ts-opt[data-theme]").forEach(el=>el.classList.toggle("active",el.dataset.theme===cfg.theme)); };
-window.setUiFontSize  = async(v)=>{ cfg.fontSize=+v; await saveAll(); syncUI(); };
-window.setChatFontSize= async(v)=>{ cfg.chatFontSize=+v; await saveAll(); syncUI(); };
-window.setAvSize = async(v)=>{
-  cfg.avSize=v; await saveAll(); syncUI();
-  document.querySelectorAll(".av-size-tab").forEach(el=>el.classList.toggle("active", el.dataset.v===v));
+/* ⭕ 开关点击的响应速度（v1.15.1 修）
+   原来是 `cfg[k]=!cfg[k]; await saveAll(); syncUI();` —— 视觉更新排在
+   **等 IndexedDB 写盘**之后，手机端写盘几十~几百 ms，于是"点了没反应，过一下才动"。
+   现在改成**乐观更新**：先立刻翻转这个开关本体（O(1)，当帧可见），
+   写盘与整体 UI 同步都挪到之后异步做。
+   ⛔ 不能只翻转本体就完事 —— 有些开关会影响别处的显示（如 hideAesBg 隐藏背景），
+      所以 syncUI() 仍然要跑，只是**不再挡在视觉反馈前面**。
+   ⛔ 写盘改用 saveAllDebounced()：连点多个开关只会落一次盘，比原来的逐次 await 更快。
+
+   ⚠ 翻转哪个元素：**从点击事件里取**，不要用 "sw_"+k 拼。
+     因为 index.html 里存在两处 id 与 key 不同名的开关：
+       id="sw_showSeconds"   ← cfgToggle('timeShowSeconds')
+       id="sw_autoTTS_adv"   ← cfgToggle('autoTTS')
+     按命名拼接这两个会找不到元素，表现为"点了不动"。
+     取 event.target 是最稳的：它就是被点中的 .sw 本身（或里面的 .sw-indicator）。
+
+   ⛔ 全量 syncUI() 的取舍：syncUI 有 136 行（遍历 [data-img]、几十个 setSw、多个 querySelectorAll）。
+     云同步那三个开关（syncAuto / syncMedia / syncChatImgs）**压根不在 syncUI 里**，
+     跑了也更新不到任何东西 —— 纯浪费一帧。所以把它们列进 SYNC_SW_NO_UI，跳过全量同步。
+     ⚠ 其余开关一律照跑 syncUI（hideAesBg / fitHome / hidePolarBg 等确实影响别处显示）。
+     ⚠ dictOn / charOn / xhyOn 在 syncUI 里**有**（见 setSw("sw_dictOn")），所以不能进这个名单。 */
+const SYNC_SW_NO_UI = ["syncAuto","syncMedia","syncChatImgs"];
+window.cfgToggle = (k, ev)=>{
+  cfg[k]=!cfg[k];
+  /* ① 立即翻转本开关的视觉（当帧生效，点下去就有反应） */
+  try{
+    let el = ev && ev.currentTarget;
+    if(!el && ev && ev.target) el = ev.target.closest ? ev.target.closest(".sw") : null;
+    if(!el) el = document.getElementById("sw_"+k);   /* 无事件对象时退回命名约定 */
+    if(el) cfg[k] ? el.classList.add("on") : el.classList.remove("on");
+  }catch(e){}
+  /* ② 其余 UI 同步与落盘都异步做，不阻塞点击反馈。
+       云同步那三个开关与全局 UI 无关 → 跳过全量 syncUI，点击反馈更快。 */
+  if(SYNC_SW_NO_UI.indexOf(k) < 0) syncUI();
+  saveAllDebounced();
+  if(k==="activeSend") scheduleActive();
+  /* ⭕ 云同步开关：只在面板上即时刷新那行状态文字，不碰别处 */
+  if(SYNC_SW_NO_UI.indexOf(k) >= 0){
+    const st=document.getElementById("syncStatus");
+    if(st && k==="syncChatImgs") st.textContent = cfg.syncChatImgs
+      ? "已开启聊天图片同步 · 下次推送会上传全部历史图片" : "聊天图片同步已关闭";
+  }
+  if(document.getElementById("chatFlow")){
+    /* 仅聊天显示相关配置才需重建 DOM，避免非相关开关触发全部重绘 */
+    const chatKeys=["showAvatar","showName","showSelfName","showTime","timeShowSeconds","oppCustomTime","showRead","showSelfRead","readText"];
+    if(chatKeys.includes(k)) renderChats();
+  }
 };
-window.setChatStyle = async v => {
+/* ⭕ 设置项的统一提速（v1.15.1）——
+   与 cfgToggle 同一个坑：`cfg=...; await saveAll(); syncUI();`
+   把 UI 更新排在"等 IndexedDB 写盘"之后，手机上点一下要等几十~几百 ms。
+   这批函数改成：**先同步做完视觉更新**（setAttr / class 高亮），写盘交给防抖。
+   ⛔ 这几项都不会因写盘失败而需要回滚 UI，所以"乐观更新"是安全的。 */
+window.setLayout = (v)=>{ cfg.layout=+v; syncUI(); document.querySelectorAll(".tab-switch .ts-opt[data-v]").forEach(el=>el.classList.toggle("active",+el.dataset.v===cfg.layout)); saveAllDebounced(); };
+window.setTheme  = (v)=>{ cfg.theme=v; syncUI(); document.querySelectorAll(".tab-switch .ts-opt[data-theme]").forEach(el=>el.classList.toggle("active",el.dataset.theme===cfg.theme)); saveAllDebounced(); };
+window.setUiFontSize  = (v)=>{ cfg.fontSize=+v; syncUI(); saveAllDebounced(); };
+window.setChatFontSize= (v)=>{ cfg.chatFontSize=+v; syncUI(); saveAllDebounced(); };
+window.setAvSize = (v)=>{
+  cfg.avSize=v; syncUI();
+  document.querySelectorAll(".av-size-tab").forEach(el=>el.classList.toggle("active", el.dataset.v===v));
+  saveAllDebounced();
+};
+window.setChatStyle = v => {
   cfg.chatStyle = +v;
-  await saveAll();
   syncUI();
   renderChats();
   document.querySelectorAll(".cs-card").forEach(el =>
     el.classList.toggle("active", +el.dataset.s === cfg.chatStyle)
   );
+  saveAllDebounced();
 };
 
 window.toggleNotif    = async()=>{
@@ -3547,15 +3609,15 @@ window.openSyncSettings=()=>{
     </div>
     <div class="stoggle-row" style="margin-top:10px;">
       <span>自动推送 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">数据变动后延迟 30 秒</span></span>
-      <div class="sw" id="sw_syncAuto" onclick="cfgToggle('syncAuto')"><div class="sw-indicator"></div></div>
+      <div class="sw" id="sw_syncAuto" onclick="cfgToggle('syncAuto', event)"><div class="sw-indicator"></div></div>
     </div>
     <div class="stoggle-row">
       <span>连图片音效一起同步 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">体积大、易超限</span></span>
-      <div class="sw" id="sw_syncMedia" onclick="cfgToggle('syncMedia')"><div class="sw-indicator"></div></div>
+      <div class="sw" id="sw_syncMedia" onclick="cfgToggle('syncMedia', event)"><div class="sw-indicator"></div></div>
     </div>
     <div class="stoggle-row">
       <span>同步聊天图片 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">独立开关 · 首次开启会补齐历史图</span></span>
-      <div class="sw" id="sw_syncChatImgs" onclick="cfgToggle('syncChatImgs')"><div class="sw-indicator"></div></div>
+      <div class="sw" id="sw_syncChatImgs" onclick="cfgToggle('syncChatImgs', event)"><div class="sw-indicator"></div></div>
     </div>
     <div id="syncStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:8px 0 6px;">${
       (cfg.syncLastPush||cfg.syncLastPull)
@@ -5270,14 +5332,14 @@ function renderRecombSettings(){
     <div style="margin-top:10px;font-size:calc(var(--fs)*.74);">云端词典</div>
     <div class="stoggle-row">
       <span>使用云端词典</span>
-      <div class="sw" id="sw_dictOn" onclick="cfgToggle('dictOn')"><div class="sw-indicator"></div></div>
+      <div class="sw" id="sw_dictOn" onclick="cfgToggle('dictOn', event)"><div class="sw-indicator"></div></div>
     </div>
     <div id="dictStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:2px 0 6px;">${dictInfo}</div>
     <button class="pill-btn" onclick="window.refreshCloudDict()">拉取 / 刷新词典</button>
     <div style="margin-top:12px;font-size:calc(var(--fs)*.74);">云端汉字表 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">扩充起字池，可选</span></div>
     <div class="stoggle-row">
       <span>使用云端汉字表</span>
-      <div class="sw" id="sw_charOn" onclick="cfgToggle('charOn')"><div class="sw-indicator"></div></div>
+      <div class="sw" id="sw_charOn" onclick="cfgToggle('charOn', event)"><div class="sw-indicator"></div></div>
     </div>
     <div id="charStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:2px 0 6px;">${charInfo}</div>
     <button class="pill-btn" onclick="window.refreshCloudChar()">拉取 / 刷新汉字表</button>
@@ -5285,7 +5347,7 @@ function renderRecombSettings(){
     <div style="margin-top:12px;font-size:calc(var(--fs)*.74);">云端歇后语 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">扩起字池 + 补口语链</span></div>
     <div class="stoggle-row">
       <span>使用云端歇后语</span>
-      <div class="sw" id="sw_xhyOn" onclick="cfgToggle('xhyOn')"><div class="sw-indicator"></div></div>
+      <div class="sw" id="sw_xhyOn" onclick="cfgToggle('xhyOn', event)"><div class="sw-indicator"></div></div>
     </div>
     <div id="xhyStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:2px 0 6px;">${xhyInfo}</div>
     <button class="pill-btn" onclick="window.refreshCloudXhy()">拉取 / 刷新歇后语</button>

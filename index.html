@@ -690,7 +690,7 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>适应屏幕（不滚动）</span>
-              <div class="sw" id="sw_fitHome" onclick="cfgToggle('fitHome')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_fitHome" onclick="cfgToggle('fitHome', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
         </div>
@@ -711,11 +711,11 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>隐藏美学卡片背景</span>
-              <div class="sw" id="sw_hideAesBg" onclick="cfgToggle('hideAesBg')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_hideAesBg" onclick="cfgToggle('hideAesBg', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>隐藏拍立得背景</span>
-              <div class="sw" id="sw_hidePolarBg" onclick="cfgToggle('hidePolarBg')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_hidePolarBg" onclick="cfgToggle('hidePolarBg', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
         </div>
@@ -854,35 +854,35 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>头像</span>
-              <div class="sw" id="sw_showAvatar" onclick="cfgToggle('showAvatar')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_showAvatar" onclick="cfgToggle('showAvatar', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>对方名称</span>
-              <div class="sw" id="sw_showName" onclick="cfgToggle('showName')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_showName" onclick="cfgToggle('showName', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>我方名称</span>
-              <div class="sw" id="sw_showSelfName" onclick="cfgToggle('showSelfName')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_showSelfName" onclick="cfgToggle('showSelfName', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>时间戳</span>
-              <div class="sw" id="sw_showTime" onclick="cfgToggle('showTime')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_showTime" onclick="cfgToggle('showTime', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>精确到秒</span>
-              <div class="sw" id="sw_showSeconds" onclick="cfgToggle('timeShowSeconds')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_showSeconds" onclick="cfgToggle('timeShowSeconds', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>对方自定义时间戳</span>
-              <div class="sw" id="sw_oppCustomTime" onclick="cfgToggle('oppCustomTime')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_oppCustomTime" onclick="cfgToggle('oppCustomTime', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>我方已读</span>
-              <div class="sw" id="sw_showRead" onclick="cfgToggle('showRead')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_showRead" onclick="cfgToggle('showRead', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>已读对方</span>
-              <div class="sw" id="sw_showSelfRead" onclick="cfgToggle('showSelfRead')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_showSelfRead" onclick="cfgToggle('showSelfRead', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
         </div>
@@ -893,27 +893,27 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>已读不回</span>
-              <div class="sw" id="sw_ignoreOn" onclick="cfgToggle('ignoreOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_ignoreOn" onclick="cfgToggle('ignoreOn', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>引用回复</span>
-              <div class="sw" id="sw_quoteOn" onclick="cfgToggle('quoteOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_quoteOn" onclick="cfgToggle('quoteOn', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>连句</span>
-              <div class="sw" id="sw_sentenceJoin" onclick="cfgToggle('sentenceJoin')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_sentenceJoin" onclick="cfgToggle('sentenceJoin', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>随机推荐歌曲</span>
-              <div class="sw" id="sw_songRecOn" onclick="cfgToggle('songRecOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_songRecOn" onclick="cfgToggle('songRecOn', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>歌词取自曲库</span>
-              <div class="sw" id="sw_lyricFromCloud" onclick="cfgToggle('lyricFromCloud')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_lyricFromCloud" onclick="cfgToggle('lyricFromCloud', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>自动繁体译文</span>
-              <div class="sw" id="sw_tradTransOn" onclick="cfgToggle('tradTransOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_tradTransOn" onclick="cfgToggle('tradTransOn', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="sinput-row" style="margin-top:6px;">
               <span class="sinput-label">繁体为主概率</span>
@@ -924,11 +924,11 @@
             </div>
             <div class="stoggle-row">
               <span>繁体为主</span>
-              <div class="sw" id="sw_tradPrimary" onclick="cfgToggle('tradPrimary')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_tradPrimary" onclick="cfgToggle('tradPrimary', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>组字（随机造句）</span>
-              <div class="sw" id="sw_recombOn" onclick="cfgToggle('recombOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_recombOn" onclick="cfgToggle('recombOn', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
           <div class="snav-list" style="margin-top:8px;">
@@ -944,7 +944,7 @@
           <div class="stoggle-group" style="margin-top:8px;">
             <div class="stoggle-row">
               <span>主动发送</span>
-              <div class="sw" id="sw_activeSend" onclick="cfgToggle('activeSend')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_activeSend" onclick="cfgToggle('activeSend', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
           <div class="sinput-row" style="margin-top:10px;">
@@ -978,7 +978,7 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>对方随机发送表情包</span>
-              <div class="sw" id="sw_stickerOn" onclick="cfgToggle('stickerOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_stickerOn" onclick="cfgToggle('stickerOn', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
 
@@ -997,7 +997,7 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>开启Bot随机画作回复</span>
-              <div class="sw" id="sw_painterOn" onclick="cfgToggle('painterOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_painterOn" onclick="cfgToggle('painterOn', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
         </div>
@@ -1008,7 +1008,7 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>群聊模式</span>
-              <div class="sw" id="sw_groupMode" onclick="cfgToggle('groupMode')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_groupMode" onclick="cfgToggle('groupMode', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
           <div class="snav-list" style="margin-top:8px;">
@@ -1033,7 +1033,7 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>浮卡</span>
-              <div class="sw" id="sw_popupOn" onclick="cfgToggle('popupOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_popupOn" onclick="cfgToggle('popupOn', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>系统通知</span>
@@ -1041,7 +1041,7 @@
             </div>
             <div class="stoggle-row">
               <span>音效</span>
-              <div class="sw" id="sw_soundOn" onclick="cfgToggle('soundOn')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_soundOn" onclick="cfgToggle('soundOn', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
           <div class="snav-list" style="margin-top:8px;">
@@ -1088,11 +1088,11 @@
           <div class="stoggle-group">
             <div class="stoggle-row">
               <span>自动朗读</span>
-              <div class="sw" id="sw_autoTTS_adv" onclick="cfgToggle('autoTTS')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_autoTTS_adv" onclick="cfgToggle('autoTTS', event)"><div class="sw-indicator"></div></div>
             </div>
             <div class="stoggle-row">
               <span>持久缓存</span>
-              <div class="sw" id="sw_ttsPersist" onclick="cfgToggle('ttsPersist')"><div class="sw-indicator"></div></div>
+              <div class="sw" id="sw_ttsPersist" onclick="cfgToggle('ttsPersist', event)"><div class="sw-indicator"></div></div>
             </div>
           </div>
           <div class="sinput-stack">

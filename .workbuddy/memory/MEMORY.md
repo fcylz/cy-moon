@@ -65,6 +65,21 @@
 - ⛔ **画作消息靠 `painterSeed` 现场重绘，不是 base64** —— 剥媒体时**绝不能删**
   `painter` / `painterSeed`（删了跨设备就退化成 `[画作]` 纯文本气泡，见 v1.14.1）
 - 聊天渲染是**窗口化**的：`INITIAL_RENDER=150` / `LOAD_BATCH=80` / `CHAT_MAX=2000`
+- ⛔ **「点一下卡」的头号嫌疑：视觉更新排在 `await saveAll()` 之后（v1.15.1）**
+  全项目设置函数的老形状是 `cfg[k]=!cfg[k]; await saveAll(); syncUI();` ——
+  UI 更新被压在等写盘后面，手机上几十~几百 ms 就是"点了没反应"。
+  ✅ 正确形状 = **乐观更新**：先当帧翻转视觉（`setSw`），`syncUI()` 之后跑，
+  落盘用 **`saveAllDebounced()`**（防抖，连点多个开关只写一次盘）。
+  扫描手法：正则 `window\.\w+\s*=\s*async[^\n]*await saveAll` 一网打尽。
+  ⚠ **例外：删除类操作保持 `await saveAll()`**（确保删掉再刷列表，且非高频）。
+- ⛔ **改 async 函数为同步前，必须全仓确认没人 `await` 它 / 用它的返回值**
+- ⚠ **开关的 DOM 元素别用 `"sw_"+key` 拼**：存在名不副实的 id ——
+  `sw_showSeconds`↔`timeShowSeconds`、`sw_autoTTS_adv`↔`autoTTS`。
+  一律**从点击事件取**（`event.currentTarget`），所有 `cfgToggle(...)` 调用点都要传 `event`
+  （`index.html` 27 处 + `app.js` 动态生成 6 处）
+- ⚠ `syncUI()` 很重（136 行）：**只对影响全局显示的开关跑它**。
+  确认方法是查该开关 id 在不在 syncUI 体内 —— 云同步三开关（syncAuto/syncMedia/syncChatImgs）
+  **不在**，跑它纯浪费（见 `SYNC_SW_NO_UI`）
 
 ## 同步时"剥媒体"的边界（踩过两次同一个坑）
 判断某字段该不该剥，标准是**它是不是媒体本体**，不是"看起来像不像大字段"：
