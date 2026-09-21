@@ -52,11 +52,17 @@
   shieldedCats/foldedCats/anniversaries/carousel/surveys/surveyRecords/stickers/msgs。
   另有 localStorage 降级备份 `cy_moon_backup`（**只备份文本**，图片/贴纸/画作替换为占位）—— 这个
   "只同步文本"策略可直接复用到云同步。
-- **云同步方案（2026-09-21 调研，未实现）**：可行 = 浏览器直连 GitHub REST API
-  （`api.github.com` 支持 CORS，无需后端）+ **私有仓库** + fine-grained PAT（Contents RW，仅该仓库）。
-  ⛔ 硬约束：**contents API 单个文件 ≤ 1MB 才支持 JSON+sha 读写**（1–100MB 只剩 raw/object，不能 PUT）
-  → 必须按 key 分文件 + 聊天分片。jsDelivr 读不到私有仓库，读取也走 API。
-  用 `sha` 做乐观锁检测多设备冲突；图片/音效是 base64，默认不同步。
+- ~~**云同步方案（2026-09-21 调研，未实现）**~~ ✅ **已实现（2026-09-21）**：
+  浏览器直连 `api.github.com`（支持 CORS，无需后端）+ **私有仓库 `fcylz/cy-moon-data`**(分支 main)
+  + fine-grained PAT。设置 → 云同步面板；`syncRepo/syncBranch/syncToken/syncAuto/syncMedia`。
+  默认**只同步文本**（图片/音效是 base64，易撞 1MB 上限 + 撑爆历史），`syncMedia` 可开。
+  `saveAll` 后延迟 30s 自动推送；启动时若云端更新只 confirm 询问，**绝不自动覆盖本地**。
+  ⛔ 令牌存 localStorage，**绝不写进代码**；用户在对话里贴过 → 完工后应 revoke 重发。
+  ⚠ 两个真实坑：①本地无 sha 而远端文件已存在 → PUT 需先 GET 取 sha，否则 422；
+  ②manifest.files[name] 是数组，pull 别读成 `info.parts`。
+  ⚠ contents API 单文件必须 ≤1MB（超出分片），用 `sha` 做乐观锁检测多设备冲突。
+- 🔧 **本机 Node 跑 fetch 必须加 `--use-system-ca`**（有 TLS 拦截代理，否则 UNABLE_TO_VERIFY_LEAF_SIGNATURE）。
+  浏览器不受影响。测试 app.js 片段用 `new Function` 提取，**数据变量要挂 globalThis** 才能观测赋值。
 - **上传文件到 `fcylz/chinese-xinhua` 的可行路径**：git 协议通 → `git clone --filter=blob:none`
   + `git sparse-checkout set data` → 加文件 → `git -c user.name=... -c user.email=... commit` → push。
   ⚠ 分支是 **master**；HTTP/CDN 只能读，写必须走 git。

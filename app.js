@@ -43,6 +43,14 @@ window.DEFAULTS = {
        首字去重 113→145。⭕ 单纯把成语池放大是无效的：3000→4850 首字去重反而 106→98。 */
     cloudXhyUrl:"https://cdn.jsdelivr.net/gh/fcylz/chinese-xinhua@master/data/xiehouyu.json",
     xhyOn:true,         // 歇后语并入语料（建链 + 起字池）
+    /* ⭕ 云同步：浏览器直连 GitHub REST API（api.github.com 支持 CORS，不需要后端），
+       数据存在你自己的**私有仓库**里。⛔ contents API 单个文件必须 ≤1MB 才支持 JSON+sha 读写，
+       所以数据按 key 分文件，超出自动分片（见 SYNC_CHUNK）。
+       ⛔ syncToken 留空让用户自己在面板里填 —— 绝不硬编码进代码。 */
+    syncRepo:"fcylz/cy-moon-data", syncBranch:"main", syncToken:"",
+    syncAuto:true,      // 自动推送（数据变动后延迟 30s）
+    syncMedia:false,    // 是否连图片/音效一起同步（体积大、易超限，默认关）
+    syncLastPush:0, syncLastPull:0, syncShas:{},
     cloudMusicLastSync:0, cloudCardLastSync:0, cloudStickerLastSync:0, cloudDictLastSync:0, cloudCharLastSync:0, cloudXhyLastSync:0, activeSoundId:"__builtin_thud1__",
 customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolarBg:false,minimaxKey: "", minimaxVoice: "male-qn-qingse", autoTTS: false,ttsUrl: "https://api.minimax.chat/v1/t2a_v2",
     ttsKey: "",
@@ -388,6 +396,7 @@ async function init() {
   /* ⭕ 汉字表同理，且是可选增强：拉不到就退回成语字频反推的字 */
   if(cfg.charOn) fetchCloudChar();
   if(cfg.xhyOn) fetchCloudXhy();   // ⭕ 歇后语同理：可选增强，拉不到就只有成语那条链
+  setTimeout(checkCloudBackup, 3000);   // ⭕ 云同步：云端有更新就提示（不自动覆盖）
 }
 
 async function saveAll() {
@@ -403,8 +412,8 @@ async function saveAll() {
         surveys, surveyRecords, stickers, msgs
       };
       for (const [k, v] of Object.entries(data)) s.put(v, k);
-      t.oncomplete = () => { res(); backupDebounced(); };
-      t.onerror = () => { res(); backupDebounced(); };
+      t.oncomplete = () => { res(); backupDebounced(); _scheduleSyncPush(); };
+      t.onerror = () => { res(); backupDebounced(); _scheduleSyncPush(); };
     } catch { res(); }
   });
 }
@@ -2628,6 +2637,256 @@ window.refreshCloudXhy=async()=>{
   const d=await fetchCloudXhy(true);
   toast(d?`歇后语已更新：${d.segs.length} 子句`:"歇后语拉取失败（可选，不影响组字）","warn");
   if(typeof renderRecombSettings==="function") renderRecombSettings();
+};
+
+/* ════════════════════════════════════════════
+   ══ 云同步（GitHub 私有仓库）══
+   ════════════════════════════════════════════
+   浏览器直连 api.github.com —— REST contents API 支持 CORS，所以**不需要任何后端**。
+     GET /repos/{repo}/contents/{path}?ref=main                → {content(base64), sha}
+     PUT /repos/{repo}/contents/{path} {content,sha,branch}    → 更新；sha 过期返回 409（别处改过）
+   ⛔ 单文件 ≤1MB 才支持这套 JSON+sha 读写（1–100MB 只剩 raw/object，PUT 不了）
+      → 所以按 key 拆文件，超过 SYNC_CHUNK 自动分片。 */
+const SYNC_API="https://api.github.com/repos/";
+const SYNC_CHUNK=820*1024;      // 单片上限（字符数），留出 base64 膨胀 33% 的余量
+const SYNC_DIR="_sync/";
+let _syncBusy=false, _syncPushTimer=null;
+
+/* btoa 直接吃中文会抛错 —— 先 UTF-8 编码成字节流再转 */
+function _b64e(s){
+  const b=new TextEncoder().encode(s); let bin="";
+  for(let i=0;i<b.length;i++) bin+=String.fromCharCode(b[i]);
+  return btoa(bin);
+}
+function _b64d(s){
+  const bin=atob(s), b=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) b[i]=bin.charCodeAt(i);
+  return new TextDecoder().decode(b);
+}
+/* ⭕ 写文件：本地没有 sha 时先查一次远端。
+   场景：新设备 / 清了缓存后又用同一个仓库 —— 远端同名文件已存在，
+   而 contents API 更新已存在的文件**必须**带 sha，否则 422「sha wasn't supplied」。 */
+async function _ghPutFile(file, text, branch, shas){
+  const key=SYNC_DIR+file;
+  let sha=shas[key];
+  if(!sha){
+    try{ const cur=await _gh(key,"GET"); sha=cur&&cur.sha; }catch(e){ /* 404 = 还没创建过，直接 PUT */ }
+  }
+  const body={message:"sync "+new Date().toLocaleString(),content:_b64e(text),branch};
+  if(sha) body.sha=sha;
+  const r=await _gh(key,"PUT",body);
+  if(r&&r.content) shas[key]=r.content.sha;
+  return r;
+}
+async function _gh(path, method, body){
+  const repo=String(cfg.syncRepo||"").replace(/^\/+|\/+$/g,"");
+  if(!repo) throw new Error("未填仓库");
+  if(!cfg.syncToken) throw new Error("未填令牌");
+  const url=SYNC_API+repo+"/contents/"+path+(method==="GET"?"?ref="+encodeURIComponent(cfg.syncBranch||"main")+"&t="+Date.now():"");
+  const headers={Accept:"application/vnd.github+json","User-Agent":"cy-moon",Authorization:"Bearer "+cfg.syncToken};
+  if(body) headers["Content-Type"]="application/json";
+  const res=await fetch(url,{method,headers,body:body?JSON.stringify(body):void 0});
+  if(!res.ok){
+    let msg=""; try{ const j=await res.json(); msg=(j&&j.message)||""; }catch(e){}
+    throw new Error(method+" "+res.status+(msg?" · "+msg:""));
+  }
+  return res.status===204?null:await res.json();
+}
+/* ⭕ 待同步的数据包：默认只带文本/元数据。
+   imgs / carousel / sounds 存的是 FileReader 出来的 base64，动辄几 MB，
+   既撞 API 的 1MB 限制，也会把提交历史撑爆 —— 所以默认排除，由 syncMedia 开关控制。 */
+function _syncBundles(includeMedia){
+  const b={
+    cfg:_syncCfgOut(), texts, cards, msgs, anniversaries,
+    surveys:{surveys,surveyRecords},
+    misc:{shieldedCats,foldedCats},
+    chats:includeMedia?chats:_stripChatMedia(chats),
+    members:includeMedia?groupMembers:groupMembers.map(m=>Object.assign({},m,{avatar:""})),
+    stickers:includeMedia?stickers:stickers.filter(s=>s.type==="url")
+  };
+  if(includeMedia){ b.imgs=imgs; b.sounds=sounds; b.carousel=carousel; }
+  return b;
+}
+function _syncCfgOut(){ const c=Object.assign({},cfg); delete c.syncToken; return c; }
+function _stripChatMedia(list){
+  return (list||[]).map(m=>{
+    const c=Object.assign({},m);
+    if(c.image){ c.text=c.text||"[图片消息]"; delete c.image; }
+    if(c.sticker){ c.text=c.text||"[贴纸消息]"; delete c.sticker; delete c.stickerId; }
+    if(c.painter){ c.text=c.text||"[画作消息]"; delete c.painter; delete c.painterSeed; }
+    return c;
+  });
+}
+function _syncParts(name,val){
+  const json=JSON.stringify(val==null?null:val);
+  if(json.length<=SYNC_CHUNK) return [{file:name+".json",text:json}];
+  if(Array.isArray(val)&&val.length){
+    const n=Math.ceil(json.length/SYNC_CHUNK), per=Math.ceil(val.length/n), out=[];
+    for(let i=0,p=1;i<val.length;i+=per,p++) out.push({file:name+"-p"+p+".json",text:JSON.stringify(val.slice(i,i+per))});
+    return out;
+  }
+  return [{file:name+".json",text:json}];   // 非数组没法切，只能原样（超限会在推送时报错）
+}
+function _syncStatus(msg){ const el=document.getElementById("syncStatus"); if(el){ el.style.display=""; el.textContent=msg; } }
+function _syncApply(b){
+  if(b.cfg) Object.assign(cfg,b.cfg,{syncToken:cfg.syncToken});   // ⭕ 令牌是本机设置，绝不能被云端覆盖
+  if(b.texts) texts=b.texts;
+  if(b.cards) cards=b.cards;
+  if(b.chats){ chats=b.chats; if(typeof markStatsDirty==="function") markStatsDirty(); }
+  if(b.msgs){ msgs=b.msgs; if(typeof normalizeMsgs==="function") normalizeMsgs(); }
+  if(b.members) groupMembers=b.members;
+  if(b.anniversaries) anniversaries=b.anniversaries;
+  if(b.surveys&&b.surveys.surveys) surveys=b.surveys.surveys;
+  if(b.surveys&&b.surveys.surveyRecords) surveyRecords=b.surveys.surveyRecords;
+  if(b.misc&&b.misc.shieldedCats) shieldedCats=b.misc.shieldedCats;
+  if(b.misc&&b.misc.foldedCats) foldedCats=b.misc.foldedCats;
+  if(b.stickers) stickers=b.stickers;
+  if(b.imgs) imgs=b.imgs;
+  if(b.sounds) sounds=b.sounds;
+  if(b.carousel) carousel=b.carousel;
+}
+function _syncRefreshUI(){
+  try{ syncUI(); }catch(e){}
+  ["renderChats","renderMembers","renderCarousel","renderStickers","renderCards","renderMosaic","renderSurveys","renderBoard"].forEach(f=>{
+    try{ if(typeof window[f]==="function") window[f](); }catch(e){}
+  });
+}
+window.pushSync=async(auto)=>{
+  if(_syncBusy) return false;
+  _syncBusy=true;
+  try{
+    _syncStatus("正在推送…");
+    const branch=cfg.syncBranch||"main", shas=cfg.syncShas||(cfg.syncShas={});
+    const bundle=_syncBundles(!!cfg.syncMedia);
+    const manifest={ts:Date.now(),files:{}};
+    let count=0;
+    for(const [name,val] of Object.entries(bundle)){
+      const parts=_syncParts(name,val);
+      for(const p of parts){
+        await _ghPutFile(p.file,p.text,branch,shas);
+        count++;
+      }
+      manifest.files[name]=parts.map(p=>p.file);
+    }
+    const mr=await _ghPutFile("index.json",JSON.stringify(manifest),branch,shas);
+    void mr;
+    cfg.syncLastPush=Date.now(); await saveAll();
+    _syncStatus(`已推送 ${count} 个文件 · ${new Date().toLocaleTimeString()}`);
+    if(!auto) toast("已推送到云端","ok");
+    return true;
+  }catch(e){
+    /* ⭕ 409 = 远端被别的设备改过，本地记录的 sha 已过期 —— 不能静默覆盖，让用户先拉 */
+    const msg=/409/.test(String(e.message))?"云端已被其他设备改过，请先「拉取」再推送":e.message;
+    _syncStatus("推送失败："+msg);
+    if(!auto) toast("推送失败："+msg,"warn");
+    return false;
+  }finally{ _syncBusy=false; }
+};
+window.pullSync=async(auto)=>{
+  if(_syncBusy) return false;
+  _syncBusy=true;
+  try{
+    _syncStatus("正在拉取…");
+    const shas=cfg.syncShas||(cfg.syncShas={});
+    const mf=await _gh(SYNC_DIR+"index.json","GET");
+    const manifest=JSON.parse(_b64d(mf.content));
+    shas[SYNC_DIR+"index.json"]=mf.sha;
+    const bundle={};
+    for(const [name,info] of Object.entries(manifest.files||{})){
+      /* ⭕ manifest.files[name] 存的是分片文件名数组；也兼容 {parts:[...]} 写法 */
+      const names=Array.isArray(info)?info:((info&&info.parts)||[]);
+      const parts=[];
+      for(const f of names){
+        const r=await _gh(SYNC_DIR+f,"GET");
+        parts.push(_b64d(r.content)); shas[SYNC_DIR+f]=r.sha;
+      }
+      bundle[name]=parts.length>1?parts.flatMap(t=>JSON.parse(t)):JSON.parse(parts[0]);
+    }
+    _syncApply(bundle);
+    cfg.syncLastPull=Date.now(); await saveAll();
+    _syncRefreshUI();
+    _syncStatus(`已拉取 · ${new Date().toLocaleTimeString()}`);
+    if(!auto) toast("已从云端拉取","ok");
+    return true;
+  }catch(e){
+    _syncStatus("拉取失败："+e.message);
+    if(!auto) toast("拉取失败："+e.message,"warn");
+    return false;
+  }finally{ _syncBusy=false; }
+};
+window.testSync=async()=>{
+  if(!cfg.syncToken){ _syncStatus("请先填令牌"); toast("请先填令牌","warn"); return; }
+  _syncStatus("测试中…");
+  try{
+    const mf=await _gh(SYNC_DIR+"index.json","GET");
+    const m=JSON.parse(_b64d(mf.content));
+    _syncStatus(`连接成功 · 云端备份 ${new Date(m.ts).toLocaleString()}`);
+    toast("连接成功","ok");
+  }catch(e){
+    if(/404/.test(String(e.message))) _syncStatus("连接成功 · 云端还没有备份，点「推送」即可创建");
+    else { _syncStatus("连接失败："+e.message); toast("连接失败："+e.message,"warn"); }
+  }
+};
+function _scheduleSyncPush(){
+  if(!cfg.syncAuto||!cfg.syncToken||!cfg.syncRepo||_syncBusy) return;
+  clearTimeout(_syncPushTimer);
+  _syncPushTimer=setTimeout(()=>window.pushSync(true),30000);   // ⭕ 攒一攒再推，避免每分钟一个 commit
+}
+/* 启动时检测：云端备份比本机最近一次推送还新，就问一句要不要拉 ——
+   ⭕ 绝不自动覆盖，覆盖本地数据必须是用户明确确认的动作 */
+async function checkCloudBackup(){
+  if(!cfg.syncToken||!cfg.syncRepo) return;
+  try{
+    const mf=await _gh(SYNC_DIR+"index.json","GET");
+    const m=JSON.parse(_b64d(mf.content));
+    if(m.ts>(cfg.syncLastPush||0)+60000){
+      if(confirm(`云端有一份 ${new Date(m.ts).toLocaleString()} 的备份，比你本机最近一次推送要新。\n是否拉取覆盖本机数据？`)) window.pullSync(true);
+    }
+  }catch(e){}
+}
+window.openSyncSettings=()=>{
+  const html=`
+    <div style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin-bottom:8px;">
+      数据存在你自己的私有仓库里，令牌只保存在本机，<b>不会被推送到云端</b>。
+    </div>
+    <div class="sinput-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+      <span class="sinput-label">仓库 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">owner/repo</span></span>
+      <input class="inp" value="${escapeHtml(cfg.syncRepo||"")}" placeholder="fcylz/cy-moon-data"
+        oninput="cfg.syncRepo=this.value.trim();saveAllDebounced()">
+    </div>
+    <div class="sinput-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:8px;">
+      <span class="sinput-label">分支</span>
+      <input class="inp" value="${escapeHtml(cfg.syncBranch||"main")}" placeholder="main"
+        oninput="cfg.syncBranch=this.value.trim();saveAllDebounced()">
+    </div>
+    <div class="sinput-row" style="flex-direction:column;align-items:stretch;gap:6px;margin-top:8px;">
+      <span class="sinput-label">访问令牌 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">fine-grained · Contents 读写 · 只选这一个仓库</span></span>
+      <input class="inp" type="password" value="${escapeHtml(cfg.syncToken||"")}" placeholder="github_pat_…"
+        oninput="cfg.syncToken=this.value.trim();saveAllDebounced()">
+    </div>
+    <div class="stoggle-row" style="margin-top:10px;">
+      <span>自动推送 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">数据变动后延迟 30 秒</span></span>
+      <div class="sw" id="sw_syncAuto" onclick="cfgToggle('syncAuto')"><div class="sw-indicator"></div></div>
+    </div>
+    <div class="stoggle-row">
+      <span>连图片音效一起同步 <span style="opacity:.6;font-size:calc(var(--fs)*.66);">体积大、易超限</span></span>
+      <div class="sw" id="sw_syncMedia" onclick="cfgToggle('syncMedia')"><div class="sw-indicator"></div></div>
+    </div>
+    <div id="syncStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:8px 0 6px;">${
+      (cfg.syncLastPush||cfg.syncLastPull)
+        ? `上次推送 ${cfg.syncLastPush?new Date(cfg.syncLastPush).toLocaleString():"从未"} · 上次拉取 ${cfg.syncLastPull?new Date(cfg.syncLastPull).toLocaleString():"从未"}`
+        : "尚未同步过"}</div>
+    <div class="pill-btn-group">
+      <button class="pill-btn" onclick="window.testSync()">测试连接</button>
+      <button class="pill-btn" onclick="window.pushSync()">推送到云端</button>
+      <button class="pill-btn" onclick="window.pullSync()">从云端拉取</button>
+    </div>
+    <div style="margin-top:8px;font-size:calc(var(--fs)*.68);color:var(--text-mute);">
+      ⚠ 单文件超过 1MB 会因 GitHub API 限制失败；图片/音效默认不同步，聊天里的图片会以 [图片消息] 占位。
+    </div>`;
+  modal("云同步", html);
+  setSw("sw_syncAuto", !!cfg.syncAuto);
+  setSw("sw_syncMedia", !!cfg.syncMedia);
 };
 
 async function fireReply(){
