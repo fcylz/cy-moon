@@ -119,9 +119,14 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.13.0";
+const APP_VERSION = "1.13.1";
 const APP_BUILD   = "2026-09-21";
 const APP_CHANGELOG = [
+  { v:"1.13.1", d:"2026-09-21", items:[
+    "云同步新增「强制推送」：忽略云端版本冲突，用本机数据覆盖云端（治误推后的单向死锁）",
+    "修正 409 的误导提示：原文只说「请先拉取」，但拉取会反过来把云端数据盖到本机",
+    "云同步面板补上「拉取 / 强制推送」两个方向的差异说明",
+  ]},
   { v:"1.13.0", d:"2026-09-21", items:[
     "聊天记录 / 群成员也走增量写入（chats、members 进跳过名单）—— 治「越用越慢」",
     "长数组签名改采样（首4 / 1/4 / 中 / 3/4 / 尾4，共 20 点）：2000 条从 5.6ms 降到 0.08ms",
@@ -3154,11 +3159,29 @@ window.pushSync=async(auto)=>{
     return true;
   }catch(e){
     /* ⭕ 409 = 远端被别的设备改过，本地记录的 sha 已过期 —— 不能静默覆盖，让用户先拉 */
-    const msg=/409/.test(String(e.message))?"云端已被其他设备改过，请先「拉取」再推送":e.message;
+    /* ⭕ 409 有两个方向，不能只让人去"拉取"：拉取会把云端那份盖到本机。
+       本机才是最新的（例如别的设备误推了测试数据）→ 该用「强制推送」。 */
+    const msg=/409/.test(String(e.message))
+      ? "云端已被其他设备改过。本机数据若是最新，用「强制推送」覆盖云端；云端若是最新，才用「从云端拉取」。"
+      : e.message;
     _syncStatus("推送失败："+msg);
     if(!auto) toast("推送失败："+msg,"warn");
     return false;
   }finally{ _syncBusy=false; }
+};
+/* ⭕ 强制推送：忽略云端版本冲突，直接用**本机数据**覆盖云端。
+   背景：推送用的是本机缓存的分片 sha（_ghPutFile 只在没有缓存时才去 GET 最新 sha），
+   所以一旦别的设备推过，本机再推必然 409。原来的提示是"请先「拉取」再推送"——
+   但「拉取」会跑 _syncApply，把云端那份**直接盖到本机数据上**。
+   当本机才是最新的（例如另一台设备误推了一份测试数据），照那句提示做 = 把自己的数据毁掉。
+   这里把本机 sha 缓存清空，让 _ghPutFile 逐个重新 GET 最新 sha 再 PUT —— 覆盖因此是安全的。
+   ⚠ 云端上其他设备推过的内容会被覆盖且无法恢复 → 必须二次确认。 */
+window.forcePushSync=async()=>{
+  if(_syncBusy) return false;
+  if(!confirm("强制推送：忽略云端版本冲突，用【本机数据】覆盖云端。\n\n⚠ 云端上其他设备推过的内容会被覆盖，且无法恢复。\n\n确定要强制推送吗？")) return false;
+  cfg.syncShas={};
+  await saveAll();
+  return window.pushSync();
 };
 window.pullSync=async(auto)=>{
   if(_syncBusy) return false;
@@ -3258,6 +3281,12 @@ window.openSyncSettings=()=>{
       <button class="pill-btn" onclick="window.testSync()">测试连接</button>
       <button class="pill-btn" onclick="window.pushSync()">推送到云端</button>
       <button class="pill-btn" onclick="window.pullSync()">从云端拉取</button>
+      <button class="pill-btn" onclick="window.forcePushSync()">强制推送</button>
+    </div>
+    <div style="margin-top:8px;font-size:calc(var(--fs)*.68);color:var(--text-mute);">
+      ⚠ <b>「从云端拉取」= 用云端覆盖本机</b>（本机数据被替换）；<br>
+      <b>「强制推送」= 用本机覆盖云端</b>（忽略版本冲突，云端那份被替换）。<br>
+      推送报"云端已被其他设备改过"时，先确认哪边才是你要的数据，再点。
     </div>
     <div style="margin-top:8px;font-size:calc(var(--fs)*.68);color:var(--text-mute);">
       ⚠ 单文件超过 1MB 会因 GitHub API 限制失败；图片/音效默认不同步，聊天里的图片会以 [图片消息] 占位。
