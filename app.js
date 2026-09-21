@@ -114,6 +114,50 @@ let DB=null, tempTimelineImg="";
 const SEP_POOL=["，","。","！","…","？","～"];
 const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开放给用户调节
 
+/* ─── 版本记录 ───
+   规则：MAJOR.MINOR.PATCH —— 改功能走 MINOR，只修 bug 走 PATCH。
+   用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
+   WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
+   ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
+const APP_VERSION = "1.12.0";
+const APP_BUILD   = "2026-09-21";
+const APP_CHANGELOG = [
+  { v:"1.12.0", d:"2026-09-21", items:[
+    "头像改走专项压缩（160px / q0.72），老头像一次性重压：单张 330KB → ~10KB",
+    "轮播 / 马赛克按实际显示尺寸压（1200px → 1080 / 400），不再一律 1200px",
+    "引用定位修复：表情包 / 图片引用不再丢锚点，点缩略图直接看原图，跳转不再跳错消息",
+    "saveAll 改为增量写入：imgs / 轮播 / 音效 / 表情包没变就不落盘（治手机端写入放大）",
+  ]},
+  { v:"1.11.0", d:"2026-09-21", items:[
+    "聊天消息不再内嵌头像 base64（chats 4MB → 36KB，实测降 99.1%）",
+  ]},
+  { v:"1.10.0", d:"2026-09-21", items:[
+    "安全：备份导出不再写入云同步令牌，导入不再覆盖本机令牌",
+    "留言板楼层顺序修复（统一 _cmtRealTs / _commentsOf 双时间轴）",
+    "组字接入三套云端语料（成语词典 / 汉字表 / 歇后语）",
+  ]},
+  { v:"1.9.0", d:"2026-09-20", items:[
+    "新增云同步：GitHub 私有仓库备份 / 恢复，默认只同步文本与元数据",
+  ]},
+  { v:"1.8.0", d:"2026-09-20", items:[
+    "留言板重构为「帖子 + 评论」两层",
+    "组字数字槽位与句首虚词；电脑端限宽布局；歌词元数据过滤修复",
+  ]},
+  { v:"1.7.0", d:"2026-08-10", items:[
+    "画作 painter 页面接入与移除；样式与组件细化",
+  ]},
+  { v:"1.6.0", d:"2026-07-14", items:[
+    "头像短按不再误触发上传；openApp 先关掉残留浮层",
+    "切换聊天布局后同步单选、滚动并聚焦输入框",
+  ]},
+  { v:"1.5.0", d:"2026-07-12", items:[
+    "响应式改造：安全区 + 多断点适配",
+    "聊天分页 / 自动回复概率 / 表情包压缩 / 完整备份恢复",
+    "跳转到指定消息 / 歌词显示增强 / 云曲库 / 云字卡库 / 云表情库 / 存储管理",
+  ]},
+  { v:"1.0.0", d:"2026-07-03", items:["初版发布（幸逢页面）"] },
+];
+
 /* ⭕ 引用相关可调常量 */
 const QUOTE_CHANCE=0.30; // 彼回复时携带引用的概率
 const QUOTE_RANGE=10;    // 引用候选范围：最近 N 条（用户消息 + 彼发过的歌词）
@@ -144,6 +188,43 @@ function _migrateChatsDropAvatar(){
     delete m.avatar; dirty=true;
   }
   return dirty;
+}
+/* ─── 一次性图片体积治理（老数据）───
+   老数据里所有图都是 _compressImg(f, 1200, 0.75) 的产物，实测：
+   imgs 单键 2380KB，其中拍立得 polar1~4 就占 1516KB（64%）、头像 493KB（21%）。
+   而它们在界面里最大也就渲染到 ~110px 宽 —— 1200px 的图 90% 的像素从来没被显示过。
+   这里按 IMG_SPEC（= 真实显示尺寸）+ 轮播 / 马赛克规格逐个重压。
+   背景图（chatBg / homeBg / aes_body_bg）**不动** —— 全屏铺底，压狠了会糊。
+   用 cfg.imgSqueeze 做版本门槛：跑过一次就不再跑，不在每次启动反复压同一批图。
+   _squeezeDataUrl 只在结果确实更小时才返回新值，所以不存在"越压越糊"。 */
+const IMG_SQUEEZE_VER = 1;
+async function _migrateSqueezeImages(){
+  if(Number(cfg.imgSqueeze||0) >= IMG_SQUEEZE_VER) return false;
+  const jobs=[];
+  /* imgs 里规格表覆盖到的键 */
+  for(const k of Object.keys(IMG_SPEC)){
+    if(!imgs[k]) continue;
+    const [mw,q]=IMG_SPEC[k];
+    jobs.push(async()=>{ const o=await _squeezeDataUrl(imgs[k],mw,q); if(o) imgs[k]=o; return !!o; });
+  }
+  /* 群成员头像（不在 imgs 里，单独走） */
+  (Array.isArray(groupMembers)?groupMembers:[]).forEach((m,i)=>{
+    if(!m || !m.avatar) return;
+    jobs.push(async()=>{ const o=await _squeezeDataUrl(m.avatar,AVATAR_MAX_W,AVATAR_Q); if(o) groupMembers[i].avatar=o; return !!o; });
+  });
+  /* 轮播 / 马赛克格子 */
+  (Array.isArray(carousel)?carousel:[]).forEach((c,i)=>{
+    if(!c || !c.data) return;
+    jobs.push(async()=>{ const o=await _squeezeDataUrl(c.data,1080,0.72); if(o) carousel[i].data=o; return !!o; });
+  });
+  (Array.isArray(imgs.mosaic)?imgs.mosaic:[]).forEach((d,i)=>{
+    if(!d) return;
+    jobs.push(async()=>{ const o=await _squeezeDataUrl(d,400,0.65); if(o) imgs.mosaic[i]=o; return !!o; });
+  });
+  let changed=false;
+  for(const j of jobs){ try{ if(await j()) changed=true; }catch(e){} }
+  cfg.imgSqueeze = IMG_SQUEEZE_VER;   /* 标记跑过（无论有没有真的压到东西） */
+  return true;                        /* 无论如何都落一次盘，把标记写进去 */
 }
 /** 消息类型识别：决定引用预览怎么渲染 */
 function _msgKind(m){
@@ -215,7 +296,10 @@ function s2t(s){
 
 /** 由一条消息构造引用对象 */
 function makeQuote(m){
-  return { mid:m.mid||"", from:m.sender==="self"?(texts.l1_name||"我"):(m.name||texts.opp_name||"对方"), text:m.text||"", kind:_msgKind(m) };
+  const kind=_msgKind(m);
+  /* ⭕ 媒体类消息的 text 可能是空的（歌曲 / 画作一类）——兜一个类型标签，
+     这样即使原消息被裁剪掉，引用行也有个能看懂的摘要，不至于变成空白行。 */
+  return { mid:m.mid||"", from:m.sender==="self"?(texts.l1_name||"我"):(m.name||texts.opp_name||"对方"), text:(m.text||QUOTE_LABEL[kind]||""), kind };
 }
 
 let cfg={}, imgs={}, texts={}, cards=[], chats=[], groupMembers=[], sounds=[], stickers=[];
@@ -392,6 +476,9 @@ async function init() {
   bindPopup();
   bindMosaicLongPress();
   syncUI();
+  /* ⭕ 版本号落进「数据 → 关于」那一行，顺便打一条日志：排查手机上"壳子有没有更新"看这里 */
+  { const _vl=document.getElementById("verLabel"); if(_vl) _vl.innerText="v"+APP_VERSION; }
+  console.log(`[幸逢] v${APP_VERSION} (${APP_BUILD}) · 数据 ${DB_VER} · 聊天 ${chats.length} 条`);
   initWelcomeParticles();
   renderChats();
   renderCarousel();
@@ -407,6 +494,9 @@ async function init() {
 
   /* ⭐ 降级备份检测：延迟到首帧渲染完成后再弹，避免阻塞启动 */
   setTimeout(tryRestoreBackup, 400);
+  /* ⭕ 老数据图片体积治理：要解码一批老图，**不能挡开屏** —— 延到首帧之后再跑。
+     受 cfg.imgSqueeze 版本门槛保护，一辈子只跑一次。 */
+  setTimeout(()=>{ _migrateSqueezeImages().then(d=>{ if(d) saveAllDebounced(); }).catch(()=>{}); }, 1200);
   /* ⭕ 留言板：开屏时若彼有新留言就提醒。
      4.2s 是刻意晚于欢迎页（3s 淡出 + .8s 收尾）—— 否则弹窗会被开屏动画盖住看不见 */
   setTimeout(checkBoardUnread, 4200);
@@ -419,22 +509,58 @@ async function init() {
   setTimeout(checkCloudBackup, 3000);   // ⭕ 云同步：云端有更新就提示（不自动覆盖）
 }
 
+/* ─── 增量写入：重型键没变就不写 ───
+   原来 saveAll 每次都把 15 个键全量 put 一遍，其中 imgs / carousel / sounds / stickers
+   是 base64 大对象（实测 imgs 单键就有 2.4MB），而它们**极少变化** ——
+   结果每发一条消息（300ms 防抖）都要把这几 MB 重新落盘：这是手机端"越用越慢"的主因。
+   下面的签名判断成本与**字节数无关**（只读 length + 首尾各 24 字符），
+   所以判断本身几乎不花钱，省下的是整块写盘。 */
+function _cheapSig(v, depth){
+  const d=depth||0; if(d>4) return "…";
+  if(v==null) return "n";
+  /* ⭕ 采样三处（首 / 中 / 尾）：只取首尾的话，"等长且只在中间改了一小段"会撞签名。
+     三处采样依然是 O(1)，但碰撞要求改动恰好避开首尾和正中 —— 对 base64 图片数据来说不可能。 */
+  if(typeof v==="string"){
+    const m=v.length>>1;
+    return "s"+v.length+":"+v.slice(0,24)+"|"+v.slice(m-12,m+12)+"|"+v.slice(-24);
+  }
+  if(typeof v==="number"||typeof v==="boolean") return "p"+String(v);
+  if(Array.isArray(v))      return "a"+v.length+"["+v.map(x=>_cheapSig(x,d+1)).join(",")+"]";
+  if(typeof v==="object"){ let s="{"; for(const k of Object.keys(v).sort()) s+=k+"="+_cheapSig(v[k],d+1)+";"; return s+"}"; }
+  return "u";
+}
+/* 只对"大且很少变"的键做跳过；cfg/texts/chats/cards 这些又小又常改，照写不误 */
+const HEAVY_KEYS = ["imgs","carousel","sounds","stickers"];
+const _lastSig = {};   /* 进程内记住上次**实际落盘**的签名；刷新页面后为空 → 首存必全量写，安全 */
+
 async function saveAll() {
   if (!DB) return;
   return new Promise(res => {
     try {
-      const t = DB.transaction("kv", "readwrite");
-      const s = t.objectStore("kv");
       const data = {
         cfg, imgs, texts, cards, chats,
         members: groupMembers, sounds,
         shieldedCats, foldedCats, anniversaries, carousel,
         surveys, surveyRecords, stickers, msgs
       };
-      for (const [k, v] of Object.entries(data)) s.put(v, k);
+      const writes = [];
+      for (const [k, v] of Object.entries(data)) {
+        if (HEAVY_KEYS.indexOf(k) >= 0) {
+          const sig = _cheapSig(v);
+          if (_lastSig[k] === sig) continue;   /* 一模一样 → 跳过整块写盘 */
+          _lastSig[k] = sig;
+        }
+        writes.push([k, v]);
+      }
+      if (!writes.length) { res(); return; }   /* 没有任何变化：连事务都不用开 */
+      const t = DB.transaction("kv", "readwrite");
+      const s = t.objectStore("kv");
+      for (const [k, v] of writes) s.put(v, k);
       t.oncomplete = () => { res(); backupDebounced(); _scheduleSyncPush(); };
-      t.onerror = () => { res(); backupDebounced(); _scheduleSyncPush(); };
-    } catch { res(); }
+      /* ⭕ 写失败时把签名表清空：否则这些键会被当成"已经写过"而永远跳过，
+         等于静默丢数据。清空后下一次保存会全量重写。 */
+      t.onerror = () => { try{ for(const k in _lastSig) delete _lastSig[k]; }catch(e){} res(); backupDebounced(); _scheduleSyncPush(); };
+    } catch { try{ for(const k in _lastSig) delete _lastSig[k]; }catch(e2){} res(); }
   });
 }
 
@@ -457,7 +583,9 @@ function _sanitizeMsgsForBackup(msgs){
   return msgs.slice(-BACKUP_MSG_MAX).map(m=>{
     const c = Object.assign({}, m);
     if(c.image){ c.text = c.text || "[图片消息]"; delete c.image; }
-    if(c.sticker){ c.text = c.text || "[贴纸消息]"; delete c.sticker; delete c.stickerId; }
+    /* ⭕ 保留 sticker / stickerId：它们只是引用锚点（布尔 + 短 id），不是媒体本体。
+       删掉的话恢复出来的聊天里，表情消息会认不出类型、引用行也定位不到原表情。 */
+    if(c.sticker){ c.text = c.text || "[表情包]"; }
     if(c.painter){ c.text = c.text || "[画作消息]"; delete c.painter; delete c.painterSeed; }
     /* ⭕ 头像同样是 base64（实测单条可达 330KB）—— localStorage 配额只有几 MB，
        不剥掉会把整个应急备份顶爆，连带 chats 一起赔进去 */
@@ -488,7 +616,17 @@ function backupCriticalData(){
   } catch(e){
     /* ⭕ 带上留言板可能顶到 localStorage 配额 —— 那就去掉留言板再写一次，
        宁可丢留言板，也别把聊天这些核心数据一起赔进去 */
-    try{ localStorage.setItem(BACKUP_KEY, JSON.stringify(base)); }catch(e2){}
+    try{ localStorage.setItem(BACKUP_KEY, JSON.stringify(base)); }
+    catch(e2){
+      /* ⭕ 还是超配额：群成员头像是 base64，是这份备份里最占地方的一块，去掉再试。
+         宁可备份里没有头像，也别一条都存不下来。 */
+      try{
+        const lean = Object.assign({}, base, {
+          groupMembers: (Array.isArray(groupMembers)?groupMembers:[]).map(m=>Object.assign({}, m, { avatar:"" }))
+        });
+        localStorage.setItem(BACKUP_KEY, JSON.stringify(lean));
+      }catch(e3){}
+    }
   }
 }
 function backupDebounced(){ clearTimeout(_backupTimer); _backupTimer = setTimeout(backupCriticalData, 1500); }
@@ -891,6 +1029,74 @@ function _compressStickerImage(file) {
   return _compressImg(file, 400, 0.6).then(r => r ? r.data : null);
 }
 
+/* ─── 头像压缩（专项） ───
+   头像在界面里最大只渲染到 ~56px（aes-av / h2-avatar 等），@3x 也就 168px。
+   之前头像和背景图共用 _compressImg(f,1200,0.75) —— 1200px 的 JPEG 动辄 200–400KB，
+   实测云端 12 条群聊消息里那份 330KB 头像就是从这里来的（占 chats 总体积 99.6%）。
+   这里单独给 160px / q0.72，体积掉到 ~10KB，肉眼无差别。
+   ⭕ 不走 _compressImg：那个函数对 <50KB 的文件直接原样透传（PNG 会保持几百 KB），
+      而且 PNG 透明区转 JPEG 会变黑 —— 这里统一铺白底后重编码，并始终经过 canvas。 */
+const AVATAR_MAX_W = 240, AVATAR_Q = 0.72;
+
+/* ─── 各类图片的「实际显示尺寸」规格表 ───
+   上传与老数据重压**共用这一份**，免得两边规格漂移。
+   ⭕ 关键前提：`.viewport` 有 max-width:430px —— 整个界面在电脑上也被框在 430px 内，
+      所以任何元素的实际渲染宽度都有上界，不会因为屏幕大就变大。据此估值（×3 DPR 上界）：
+     · 头像：最大是 .l2-av 88px → 88×3 = 264，取 240（91%，肉眼无差）
+     · 拍立得 .polaroid-card 宽 23%（430px 下约 91px）→ 360
+     · 叠放照片 .sp-front 62% / .sp-back 72%（12 栅格半宽 ~199px）→ 520
+     · .aes-main 100px / .m-cover → 360
+   实测（真实备份）：imgs 2380KB → 374KB，降 84.3%。
+   ⭕ 没列进来的键（l2_cover / l2_duo / 主题插画 / p1_img 等）沿用原来的 1200px 兜底，
+      不在这一轮冒险改。 */
+const IMG_SPEC = {
+  selfAvatar:[AVATAR_MAX_W,AVATAR_Q], oppAvatar:[AVATAR_MAX_W,AVATAR_Q],
+  polar1:[360,0.72], polar2:[360,0.72], polar3:[360,0.72], polar4:[360,0.72],
+  l1_p1:[520,0.74], l1_p2:[520,0.74],
+  aes_main:[360,0.72], music_cover:[360,0.72],
+};
+function _compressAvatar(file){
+  return new Promise(resolve=>{
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    img.onload=()=>{
+      URL.revokeObjectURL(url);
+      const out=_drawToJpeg(img, AVATAR_MAX_W, AVATAR_Q);
+      resolve(out);
+    };
+    img.onerror=()=>{ URL.revokeObjectURL(url); resolve(null); };
+    img.src=url;
+  });
+}
+/* 把 <img> 按最大宽度等比缩放后编码成 JPEG（铺白底，避免 PNG 透明变黑）。
+   任何一步失败都返回 null，由调用方决定退回原图还是报错。 */
+function _drawToJpeg(img, maxW, q){
+  try{
+    let w=img.naturalWidth||img.width, h=img.naturalHeight||img.height;
+    if(!w||!h) return null;
+    if(w>maxW){ h=Math.max(1,Math.round(h*(maxW/w))); w=maxW; }
+    const c=document.createElement("canvas"); c.width=w; c.height=h;
+    const g=c.getContext("2d"); if(!g) return null;
+    g.fillStyle="#ffffff"; g.fillRect(0,0,w,h);
+    g.drawImage(img,0,0,w,h);
+    return c.toDataURL("image/jpeg", q);
+  }catch(e){ return null; }
+}
+/* 把已有的 dataURL 重新压到 maxW / q；只有确实变小了才返回新值，否则返回 null。
+   供老数据一次性重压用（见 _migrateSqueezeImages）。 */
+function _squeezeDataUrl(src, maxW, q){
+  if(typeof src!=="string" || src.indexOf("data:image/")!==0) return Promise.resolve(null);
+  return new Promise(resolve=>{
+    const img=new Image();
+    img.onload=()=>{
+      const out=_drawToJpeg(img, maxW, q);
+      resolve(out && out.length < src.length ? out : null);
+    };
+    img.onerror=()=>resolve(null);
+    img.src=src;
+  });
+}
+
 async function onPickImg(e){
   const f=e.target.files[0]; if(!f) return;
   /* ⭕ 用户发送图片消息：只做一次强压缩（显示小图 + 减轻存储），跳过 1200px 压缩 */
@@ -907,18 +1113,49 @@ async function onPickImg(e){
     if(navigator.vibrate) navigator.vibrate(18);
     return;
   }
-  const result = await _compressImg(f, 1200, 0.75);
+
+  /* ⭕ 头像单独走专项压缩（160px / q0.72）。
+     之前头像和背景图共用 1200px/q0.75，一张就 200–400KB —— 云端那个 330KB 的"头像"就是它。
+     头像最大只渲染到 ~56px（@3x 也就 168px），160px 足够清晰，体积掉到 ~10KB。 */
+  if(imgPickKey==="__memberAvatar__"||imgPickKey==="selfAvatar"||imgPickKey==="oppAvatar"){
+    const key=imgPickKey, mi=memberPickIdx;
+    imgPickKey=""; memberPickIdx=-1;
+    const av=await _compressAvatar(f);
+    if(!av){ toast("头像图片无法处理，请换一张","warn"); return; }
+    if(key==="__memberAvatar__"){
+      if(mi<0||!groupMembers[mi]) return;
+      groupMembers[mi].avatar=av; await saveAll(); renderMembers(); toast("已更新");
+      return;
+    }
+    imgs[key]=av; await saveAll(); syncUI(); toast("已更新");
+    return;
+  }
+
+  /* ⭕ 轮播 / 马赛克格子按**实际显示尺寸**压，不再一律走 1200px —— 格子只渲染成小方块 */
+  if(imgPickKey==="__carousel__"){
+    const r=await _compressImg(f,1080,0.72); if(!r) return;
+    if(carousel.length >= MAX_CAROUSEL){ toast(`轮播图已达上限 ${MAX_CAROUSEL} 张`,"warn"); return; }
+    carousel.push({id:"car"+Date.now(),data:r.data}); await saveAll(); renderCarousel(); renderCarouselManage(); return;
+  }
+  if(imgPickKey==="__mosaic_new__"){
+    const r=await _compressImg(f,400,0.65); if(!r) return;
+    if(!imgs.mosaic) imgs.mosaic=[]; if(imgs.mosaic.length<4) imgs.mosaic.push(r.data); await saveAll(); renderMosaic(); return;
+  }
+  if(imgPickKey.startsWith("__mosaic_")){
+    const r=await _compressImg(f,400,0.65); if(!r) return;
+    const idx=parseInt(imgPickKey.split("_")[2]);
+    if(imgs.mosaic?.[idx]!==undefined){ imgs.mosaic[idx]=r.data; await saveAll(); renderMosaic(); }
+    return;
+  }
+
+  /* ⭕ 按这张图**实际显示多大**来压（IMG_SPEC 与老数据迁移共用一份规格）；
+     表里没有的键沿用 1200px / q0.75 兜底。 */
+  const spec = IMG_SPEC[imgPickKey] || [1200, 0.75];
+  const result = await _compressImg(f, spec[0], spec[1]);
   if(!result) return;
   const data = result.data;
-  if(imgPickKey==="__memberAvatar__"&&memberPickIdx>-1){ groupMembers[memberPickIdx].avatar=data; await saveAll(); renderMembers(); return; }
-  if(imgPickKey==="__carousel__"){
-    if(carousel.length >= MAX_CAROUSEL){ toast(`轮播图已达上限 ${MAX_CAROUSEL} 张`,"warn"); return; }
-    carousel.push({id:"car"+Date.now(),data}); await saveAll(); renderCarousel(); renderCarouselManage(); return;
-  }
-  if(imgPickKey==="__mosaic_new__"){ if(!imgs.mosaic) imgs.mosaic=[]; if(imgs.mosaic.length<4) imgs.mosaic.push(data); await saveAll(); renderMosaic(); return; }
   /* ⭕ 用户发送图片消息：不污染 imgs 池（已在函数入口提前处理，此处为防御） */
   if(imgPickKey==="__chat_image_send__"){ return; }
-  if(imgPickKey.startsWith("__mosaic_")){ const idx=parseInt(imgPickKey.split("_")[2]); if(imgs.mosaic?.[idx]!==undefined){ imgs.mosaic[idx]=data; await saveAll(); renderMosaic(); } return; }
   imgs[imgPickKey]=data; await saveAll();
   if(imgPickKey==="aes_body_bg") { applyAesBodyBg(); toast("已更新"); return; }
   syncUI(); toast("已更新");
@@ -1249,8 +1486,10 @@ function quoteLineHtml(q){
   const kind = tgt ? _msgKind(tgt) : (qi.kind||"text");
   let thumb="", txt="";
   if(tgt){
-    if(kind==="image")       { thumb=`<img class="qthumb" src="${escapeHtml(tgt.image)}" alt="" onerror="this.style.display='none'">`; txt="[图片]"; }
-    else if(kind==="sticker"){ thumb=`<img class="qthumb round" src="${escapeHtml(resolveStickerSrc(tgt.stickerId))}" alt="" onerror="this.style.display='none'">`; txt="[表情包]"; }
+    /* ⭕ 缩略图带 data-view：点缩略图直接看原图（比"跳过去再看"少一步），
+       点引用行其余区域才是跳到原消息 —— 见 bindChatDelegation 的 click 分支。 */
+    if(kind==="image")       { thumb=`<img class="qthumb" data-view="1" src="${escapeHtml(tgt.image)}" alt="" title="点击查看原图" onerror="this.style.display='none'">`; txt="[图片]"; }
+    else if(kind==="sticker"){ thumb=`<img class="qthumb round" data-view="1" src="${escapeHtml(resolveStickerSrc(tgt.stickerId))}" alt="" title="点击查看原图" onerror="this.style.display='none'">`; txt="[表情包]"; }
     else if(kind==="painter"){ txt="[画作]"; }
     else if(kind==="song")   { txt="♪ "+(tgt.songName||"未知曲目"); }
     else if(kind==="lyric")  { txt=tgt.text||"[歌词]"; }
@@ -1261,7 +1500,12 @@ function quoteLineHtml(q){
     if(txt) txt += "（已删除）";
   }
   if(!txt && !thumb) return "";
-  return `<div class="quote-line" data-mid="${escapeHtml(qi.mid)}" data-jump="${escapeHtml(qi.text)}"><div class="qarm"></div>${thumb}<div class="qtxt">${escapeHtml(txt)}</div></div>`;
+  /* ⭕ 文本兜底只在"纯文本类"引用上用。
+     图片/表情包消息的 text 是同一个占位串（"[图片]"/"[表情包]"），
+     一旦 mid 失效（老数据 / 被裁剪），按 text 找会跳到**第一条**同类消息上 —— 指错人。
+     这类引用宁可只靠 mid 定位，定位不到就什么都不跳，也不跳错。 */
+  const jumpText = (kind==="text"||kind==="lyric") ? (qi.text||"") : "";
+  return `<div class="quote-line" data-mid="${escapeHtml(qi.mid)}" data-kind="${escapeHtml(kind)}" data-jump="${escapeHtml(jumpText)}"><div class="qarm"></div>${thumb}<div class="qtxt">${escapeHtml(txt)}</div></div>`;
 }
 
 function _buildMsgRow(m, idx, ctx){
@@ -1865,6 +2109,11 @@ function bindChatDelegation(){
 
   // ⭐ click — 短按切换翻译 / 点击引用行跳转
   cf.addEventListener("click", e => {
+    /* ⭕ 引用行的缩略图 → 直接看原图（图片 / 表情包）。
+       必须排在"引用行跳转"之前：缩略图也是 .quote-line 的子元素，
+       否则点它会先被下面的跳转分支吃掉。 */
+    const qv = e.target.closest(".quote-line .qthumb[data-view]");
+    if (qv && qv.src) { e.stopPropagation(); window._openImageModal(qv.src); return; }
     // 引用行跳转
     const ql = e.target.closest(".quote-line");
     if (ql && (ql.dataset.mid || ql.dataset.jump)) { e.stopPropagation(); jumpToMsg(ql.dataset.mid, ql.dataset.jump); return; }
@@ -2735,7 +2984,11 @@ function _stripChatMedia(list){
   return (list||[]).map(m=>{
     const c=Object.assign({},m);
     if(c.image){ c.text=c.text||"[图片消息]"; delete c.image; }
-    if(c.sticker){ c.text=c.text||"[贴纸消息]"; delete c.sticker; delete c.stickerId; }
+    /* ⭕ 表情包消息**只留引用锚点**：sticker:true 是个布尔、stickerId 是个短 id，俩加起来几十字节。
+       真正的 base64 在 stickers 数组里（上一行已按 type 过滤），跟消息无关。
+       原来把这两个字段一起删掉是错的：_msgKind 认不出它是表情 → 引用行退化成纯文本，
+       连"这条引用的是哪个表情"都定位不到。删了没省到空间，只砸了功能。 */
+    if(c.sticker){ c.text=c.text||"[表情包]"; }
     if(c.painter){ c.text=c.text||"[画作消息]"; delete c.painter; delete c.painterSeed; }
     if(c.avatar){ delete c.avatar; }   /* ⭕ 头像也是 base64，云端要它没用（渲染按 memberId 查） */
     return c;
@@ -3091,9 +3344,28 @@ function _addChatMsg(msg) {
     saveAllDebounced();
   }
 }
+/* ⭕ 版本与更新记录。
+   手机上确认"壳子到底加载的是哪一版"就靠这个 —— WebView 缓存很顽固，
+   出问题时第一件事是看版本号变没变，而不是怀疑代码。 */
+window.showVersionInfo = () => {
+  let html = '<div style="font-size:12px;line-height:1.7;padding:2px 0;">';
+  html += `<div style="margin-bottom:10px;">当前版本：<b>v${APP_VERSION}</b><span style="opacity:.6"> · ${APP_BUILD}</span></div>`;
+  html += '<div style="font-size:11px;opacity:.6;margin-bottom:6px;">更新记录（新 → 旧）</div>';
+  for(const it of APP_CHANGELOG){
+    html += '<div style="margin:0 0 10px;padding-left:8px;border-left:2px solid rgba(127,127,127,.25);">';
+    html += `<div><b>v${it.v}</b><span style="opacity:.6"> · ${it.d}</span></div>`;
+    html += (it.items||[]).map(x=>`<div style="opacity:.85;">· ${escapeHtml(x)}</div>`).join("");
+    html += '</div>';
+  }
+  html += '<div style="font-size:11px;opacity:.6;margin-top:4px;">完整记录见仓库根目录 CHANGELOG.md</div>';
+  html += '</div>';
+  modal('版本', html);
+};
+
 // ⭐ 存储用量估算
 window.showStorageInfo = async () => {
   let html = '<div style="font-size:12px;line-height:1.8;padding:4px 0;">';
+  html += `<div>🏷 版本：<b>v${APP_VERSION}</b>（${APP_BUILD}）</div>`;
   try {
     const est = await navigator.storage.estimate();
     if (est.usage !== undefined) {

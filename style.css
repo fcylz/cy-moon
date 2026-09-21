@@ -3287,6 +3287,9 @@
   margin-top: 1px;
 }
 .quote-line .qthumb.round { border-radius: 5px; }
+/* ⭕ 引用行里的图片 / 表情包缩略图可点开看原图，给个可点的提示和按下反馈 */
+.quote-line .qthumb[data-view] { cursor: zoom-in; }
+.quote-line .qthumb[data-view]:active { opacity: .65; transform: scale(.92); }
 
 /* â”€â”€â”€ ç¾ŽåŒ–: Dock æ¿€æ´»æ€æ”¹ä¸ºåº•éƒ¨å°åœ†ç‚¹ â”€â”€â”€ */
 .dock-btn { position: relative; }
