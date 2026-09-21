@@ -83,6 +83,12 @@
   `groupMembers.id` / `surveys.id` / `surveyRecords.id` / `carousel.id` / `sounds.id`
 - ⚠ **合并只做加法，表达不出「删除」** —— 要彻底对齐某一边只能用覆盖按钮。
   新增同步数据类型时先想清楚它"能不能按唯一键并集"，不能就挂到配置类按时戳裁决
+- ⛔ **同键跳过 ≠ 只要本机有就行（v1.14.2 的教训）**：`_mergeByKey` 同键无条件 `continue`，
+  本意是防旧数据覆盖；副作用是**本机那条若是残缺版（媒体被剥过），云端完整版永远进不来**。
+  所以"并集"这套机制**默认修不好任何本机已有的坏记录**。
+  解法是给 `_mergeChats` 加**单向回填**：只补本机缺的媒体字段（`painter/painterSeed`、
+  `image/imgId`、`sticker/stickerId`），**绝不碰 `text`/`ts`/`sender`/`name`**。
+  ⛔ 回填只加在 `_mergeChats` 上 —— `_mergeByKey` 被 cards/members/surveys 共用，改它会波及全部列表类
 - 两个覆盖出口对称：`forcePushSync()` 本机→云端 / `forcePullSync()` 云端→本机，都带二次确认。
   **409 时先判断哪边是最新**，别再让人无脑去拉取
 - `_syncCfgOut()` 必须屏蔽 `syncToken` / `syncShas` / `syncLastPush` / `syncLastPull`

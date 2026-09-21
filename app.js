@@ -119,9 +119,16 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.14.1";
+const APP_VERSION = "1.14.2";
 const APP_BUILD   = "2026-09-21";
 const APP_CHANGELOG = [
+  { v:"1.14.2", d:"2026-09-21", items:[
+    "修复：合并拉取时，若本机已有一条被剥过媒体的残缺消息，云端完整版永远进不来（画作/图片/表情在对面永久定格为占位符）",
+    "原因：v1.14.0 的「同键本机优先」是无条件的——它挡住了旧数据覆盖，也顺手挡住了「云端来补齐本机缺的媒体」",
+    "现在 _mergeChats 开了**单向回填**：只允许云端补齐本机缺的 painter/painterSeed、image/imgId、sticker/stickerId",
+    "⛔ 绝不改写 text / ts / sender / name——本机的新内容与时间戳仍然优先，防旧数据覆盖的初衷不变",
+    "顺带把 _msgKind 的图片判定放宽为 m.image || m.imgId，为 v1.15.0 的图片独立寻址铺路",
+  ]},
   { v:"1.14.1", d:"2026-09-21", items:[
     "修复：画作消息云同步后变成「[画作]」纯文本气泡（跨设备看不到画）",
     "原因：同步前剥媒体时把 painter / painterSeed 一起删了——而画作没有 base64，种子即内容",
@@ -263,7 +270,7 @@ function _msgKind(m){
   if(m.sticker) return "sticker";
   if(m.painter) return "painter";
   if(m.song)    return "song";
-  if(m.image)   return "image";
+  if(m.image || m.imgId) return "image";   /* ⭕ imgId 是 v1.15.0 的独立寻址（图存 chatImgs），老数据仍走 m.image */
   if(m.lyric)   return "lyric";
   return "text";
 }
@@ -3188,9 +3195,35 @@ function _mergeMsgs(local, remote){
   }
   return out;
 }
-/* 聊天记录：并集后按 ts 排回时间序，并遵守 CHAT_MAX 上限（只留最近那批） */
+/* 聊天记录：并集后按 ts 排回时间序，并遵守 CHAT_MAX 上限（只留最近那批）。
+   ── 回填（v1.15.0 / 决策 3「尝试回填」）──
+   _mergeByKey 是「同键以本机为准、无条件跳过云端」，这对防旧数据覆盖是对的，
+   但它有个治不好的疤：某台设备先落了一条**被剥过媒体**的同一 mid 消息
+   （典型来源：v1.14.1 之前的 `delete c.painter`，或图片消息的 `delete c.image`），
+   之后云端那份**完整版**永远进不来 —— 于是「[画作]」灰字气泡在对面永久定格。
+   所以这里开一个**单向**例外：只允许「云端补齐本机缺的媒体字段」。
+   ⛔ 绝不碰 text / ts / sender / name —— 也就是说本机的新内容、时间戳、
+   排序都不会被云端的旧版本改写，只是把缺失的画作/图片/表情锚点补回来。 */
 function _mergeChats(local, remote){
   let out = _mergeByKey(local, remote, _keyBy("mid"));
+  const byMid = new Map();
+  for(const m of out){ if(m && m.mid!=null) byMid.set(m.mid, m); }
+  for(const rm of (Array.isArray(remote)?remote:[])){
+    if(!rm || rm.mid==null) continue;
+    const lm = byMid.get(rm.mid);
+    if(!lm || lm===rm) continue;
+    /* ⭕ 画作：本机认不出是画作（painter 缺失）而云端有 seed → 采纳云端。
+       种子即内容（无 base64），补回来就能重绘 —— 这是本轮回填的主要目标。 */
+    if(!lm.painter && rm.painter){ lm.painter=true; if(rm.painterSeed!=null) lm.painterSeed=rm.painterSeed; }
+    /* ⭕ 图片：本机两处都没有（既无 image 也无 imgId）而云端有 → 采纳。
+       v1.15.0 之前图片内嵌在 m.image，之后挪进 chatImgs 用 m.imgId 寻址，两个都算。 */
+    if(!lm.image && !lm.imgId && (rm.image || rm.imgId)){
+      if(rm.image) lm.image=rm.image;
+      if(rm.imgId) lm.imgId=rm.imgId;
+    }
+    /* ⭕ 表情包：本机缺引用锚点而云端有 → 采纳（与上面同一个错误、同一处顺手修） */
+    if(!lm.sticker && rm.sticker){ lm.sticker=true; if(rm.stickerId!=null) lm.stickerId=rm.stickerId; }
+  }
   out.sort((a,b)=>(Number(a&&a.ts)||0)-(Number(b&&b.ts)||0));
   const cap = (typeof CHAT_MAX==="number" && CHAT_MAX>0) ? CHAT_MAX : 2000;
   return out.length>cap ? out.slice(-cap) : out;
