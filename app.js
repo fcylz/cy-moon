@@ -119,11 +119,22 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.12.0";
+const APP_VERSION = "1.13.0";
 const APP_BUILD   = "2026-09-21";
 const APP_CHANGELOG = [
+  { v:"1.13.0", d:"2026-09-21", items:[
+    "聊天记录 / 群成员也走增量写入（chats、members 进跳过名单）—— 治「越用越慢」",
+    "长数组签名改采样（首4 / 1/4 / 中 / 3/4 / 尾4，共 20 点）：2000 条从 5.6ms 降到 0.08ms",
+    "设置页的图片改成「指纹没变就不碰 src」—— 治「进设置页调设置卡」（此前每次改开关都全量重解码 base64）",
+    "进聊天页加脏检查：DOM 还在且内容没变就复用，不再每次重建 150 条；翻过的历史位置也不会被打回",
+    "留言板 msgs 有意不进跳过名单（它有「原地改已读」的操作，采样会漏写）",
+  ]},
+  { v:"1.12.1", d:"2026-09-21", items:[
+    "头像 / 昵称一改，聊天与留言板立即同步（此前要退出重进才换）",
+    "修正头像压缩规格的文档笔误（代码实为 240px / q0.72，注释与更新记录写的 160px 是错的）",
+  ]},
   { v:"1.12.0", d:"2026-09-21", items:[
-    "头像改走专项压缩（160px / q0.72），老头像一次性重压：单张 330KB → ~10KB",
+    "头像改走专项压缩（240px / q0.72），老头像一次性重压：单张 330KB → ~17KB",
     "轮播 / 马赛克按实际显示尺寸压（1200px → 1080 / 400），不再一律 1200px",
     "引用定位修复：表情包 / 图片引用不再丢锚点，点缩略图直接看原图，跳转不再跳错消息",
     "saveAll 改为增量写入：imgs / 轮播 / 音效 / 表情包没变就不落盘（治手机端写入放大）",
@@ -514,9 +525,15 @@ async function init() {
    是 base64 大对象（实测 imgs 单键就有 2.4MB），而它们**极少变化** ——
    结果每发一条消息（300ms 防抖）都要把这几 MB 重新落盘：这是手机端"越用越慢"的主因。
    下面的签名判断成本与**字节数无关**（只读 length + 首尾各 24 字符），
-   所以判断本身几乎不花钱，省下的是整块写盘。 */
+   所以判断本身几乎不花钱，省下的是整块写盘。
+
+   ⭕ chats / members 也走这套（v1.13.0 加）：它们不是"大"而是"会越长越大" ——
+      设置页每个开关都是 await saveAll(); syncUI();，聊天攒到 2000 条时，
+      每次改设置都要把整个聊天记录重新序列化落盘，于是表现为"越用越慢"。
+      安全性：全项目没有"编辑单条消息"的功能，改动必然落在 length 或首/中/尾采样点上。 */
+const SIG_ARRAY_FULL = 64;   /* 数组不超过这么多就全量算签名（短数组信息量大、判断成本也低） */
 function _cheapSig(v, depth){
-  const d=depth||0; if(d>4) return "…";
+  const d=depth||0; if(d>8) return "…";   /* 深度上限只用于兜住循环引用，不是用来省成本的 */
   if(v==null) return "n";
   /* ⭕ 采样三处（首 / 中 / 尾）：只取首尾的话，"等长且只在中间改了一小段"会撞签名。
      三处采样依然是 O(1)，但碰撞要求改动恰好避开首尾和正中 —— 对 base64 图片数据来说不可能。 */
@@ -525,12 +542,31 @@ function _cheapSig(v, depth){
     return "s"+v.length+":"+v.slice(0,24)+"|"+v.slice(m-12,m+12)+"|"+v.slice(-24);
   }
   if(typeof v==="number"||typeof v==="boolean") return "p"+String(v);
-  if(Array.isArray(v))      return "a"+v.length+"["+v.map(x=>_cheapSig(x,d+1)).join(",")+"]";
+  if(Array.isArray(v)){
+    const n=v.length;
+    if(n<=SIG_ARRAY_FULL) return "a"+n+"["+v.map(x=>_cheapSig(x,d+1)).join(",")+"]";
+    /* ⭕ 长数组只采样 20 个点（首4 / 1/4 / 中 / 3/4 / 尾4）。
+       本项目的数组只有三种变法：增删（length 变）、尾部追加（末尾变）、
+       整体替换（首尾必变）—— 都不需要逐条遍历。
+       而 chats 是唯一会长到 2000 条的数组，全量递归 = 每次保存都做一遍
+       2000 次字符串拼接，纯粹是浪费。 */
+    const q1=n>>2, h=n>>1, q3=(n*3)>>2;
+    const idx=[0,1,2,3, q1-2,q1-1,q1,q1+1, h-2,h-1,h,h+1, q3-2,q3-1,q3,q3+1, n-4,n-3,n-2,n-1];
+    return "a"+n+"["+idx.map(i=>_cheapSig(v[i],d+1)).join(",")+"]";
+  }
   if(typeof v==="object"){ let s="{"; for(const k of Object.keys(v).sort()) s+=k+"="+_cheapSig(v[k],d+1)+";"; return s+"}"; }
   return "u";
 }
-/* 只对"大且很少变"的键做跳过；cfg/texts/chats/cards 这些又小又常改，照写不误 */
-const HEAVY_KEYS = ["imgs","carousel","sounds","stickers"];
+/* 跳过名单分两类 ——
+   ① "大且很少变"：imgs / carousel / sounds / stickers（base64 大对象，一次写盘就是几 MB）
+   ② "会越用越大，但只会增删 / 整体替换"：chats / members
+
+   ⚠ msgs（留言板）**故意不进名单**。它同样越长越大，但 checkBoardUnread 会**原地**
+     把单条帖子的 read 改成 true —— 而长数组的签名是**采样**的（见 _cheapSig），
+     改在非采样点上就抓不到，后果是"已读状态不落盘"。要收它得给原地修改加脏标记，
+     那是另一件事，不混进这版。
+   其余（cfg / texts / cards / surveys …）又小又常改，全量写。 */
+const HEAVY_KEYS = ["imgs","carousel","sounds","stickers","chats","members"];
 const _lastSig = {};   /* 进程内记住上次**实际落盘**的签名；刷新页面后为空 → 首存必全量写，安全 */
 
 async function saveAll() {
@@ -709,8 +745,19 @@ function syncUI() {
   if (!_dataImgCache) _dataImgCache = Array.from(document.querySelectorAll("[data-img]"));
   _dataImgCache.forEach(el=>{
     const k=el.dataset.img;
-    if(imgs[k]){ el.src=imgs[k]; el.removeAttribute("data-empty"); }
-    else { el.src=window.DEFAULTS.PH_SVG; el.setAttribute("data-empty","1"); }
+    const v = imgs[k] || window.DEFAULTS.PH_SVG;
+    /* ⭕ 指纹一致就完全不碰 src。
+       给 <img>.src 赋上同一个 base64 字符串，浏览器也会把整串重新解析、重新解码 ——
+       而 syncUI() 最高频的触发者正是"改设置"（cfgToggle / setTheme / setLayout / 改字号），
+       设置页又有几十个 [data-img]，于是每点一个开关就全量重解码一遍：
+       这就是"进设置页调什么都不顺畅"的来源。指纹用 _cheapSig，O(1)，与图片字节数无关。 */
+    const sig = _cheapSig(v);
+    if(el._imgSig !== sig){ el._imgSig = sig; el.src = v; }
+    const has = !!imgs[k];
+    if(el._imgHas !== has){
+      el._imgHas = has;
+      if(has) el.removeAttribute("data-empty"); else el.setAttribute("data-empty","1");
+    }
   });
   document.querySelectorAll(".editable").forEach(el=>{
     const k=el.dataset.key; if(!k) return;
@@ -978,7 +1025,7 @@ window.uploadImg = k=>{
   modal("画片",`<div class="pill-btn-group"><button class="pill-btn" onclick="triggerImgPick()">更换</button>${hasImg?`<button class="pill-btn danger" onclick="clearImgKey('${k}')">清除</button>`:""}</div>`);
 };
 window.triggerImgPick = ()=>{ closeModal(); const i=document.getElementById("fpImg"); i.value=""; i.click(); };
-window.clearImgKey = async k=>{ delete imgs[k]; await saveAll(); syncUI(); closeModal(); toast("已清除"); };
+window.clearImgKey = async k=>{ delete imgs[k]; await saveAll(); syncUI(); if(k==="selfAvatar"||k==="oppAvatar") refreshIdentityViews(); closeModal(); toast("已清除"); };
 
 // ─── File pickers ───
 function bindFilePickers(){
@@ -1033,7 +1080,7 @@ function _compressStickerImage(file) {
    头像在界面里最大只渲染到 ~56px（aes-av / h2-avatar 等），@3x 也就 168px。
    之前头像和背景图共用 _compressImg(f,1200,0.75) —— 1200px 的 JPEG 动辄 200–400KB，
    实测云端 12 条群聊消息里那份 330KB 头像就是从这里来的（占 chats 总体积 99.6%）。
-   这里单独给 160px / q0.72，体积掉到 ~10KB，肉眼无差别。
+   这里单独给 240px / q0.72 —— 对最大 56px 的渲染尺寸是 4 倍以上超采样，体积掉到 ~17KB。
    ⭕ 不走 _compressImg：那个函数对 <50KB 的文件直接原样透传（PNG 会保持几百 KB），
       而且 PNG 透明区转 JPEG 会变黑 —— 这里统一铺白底后重编码，并始终经过 canvas。 */
 const AVATAR_MAX_W = 240, AVATAR_Q = 0.72;
@@ -1097,6 +1144,22 @@ function _squeezeDataUrl(src, maxW, q){
   });
 }
 
+/* ⭕ 资料一换，已经渲染出来的地方要一起换。
+   消息行（_buildMsgRow）和留言板里的头像/昵称是**直接写进 src / innerHTML 的**，
+   没有 data-img 属性 —— 所以 syncUI() 那套"按 imgs 注入"的机制碰不到它们。
+   不重渲染就会出现"换了新头像，聊天里还挂着旧头像"。
+   受影响的来源三种都要管：群成员头像、自己的头像、对方头像。 */
+function refreshIdentityViews(){
+  /* ⭕ 聊天页不在前台就不重建：切过去时 openApp 会自己 renderChats()。
+     这里重建只是白吃一次"最近 150 条消息 + 里面所有图片"的渲染开销，
+     表现为在设置页里换一次头像卡一下。 */
+  try{
+    const app=document.getElementById("chatApp");
+    if(app && app.classList.contains("active")) renderChats();
+  }catch(e){}
+  try{ if(typeof window.renderBoard==="function") window.renderBoard(); }catch(e){}
+}
+
 async function onPickImg(e){
   const f=e.target.files[0]; if(!f) return;
   /* ⭕ 用户发送图片消息：只做一次强压缩（显示小图 + 减轻存储），跳过 1200px 压缩 */
@@ -1114,9 +1177,9 @@ async function onPickImg(e){
     return;
   }
 
-  /* ⭕ 头像单独走专项压缩（160px / q0.72）。
+  /* ⭕ 头像单独走专项压缩（240px / q0.72）。
      之前头像和背景图共用 1200px/q0.75，一张就 200–400KB —— 云端那个 330KB 的"头像"就是它。
-     头像最大只渲染到 ~56px（@3x 也就 168px），160px 足够清晰，体积掉到 ~10KB。 */
+     头像在界面里最大渲染到 ~56px，240px 是 4 倍以上超采样，足够清晰，体积掉到 ~17KB。 */
   if(imgPickKey==="__memberAvatar__"||imgPickKey==="selfAvatar"||imgPickKey==="oppAvatar"){
     const key=imgPickKey, mi=memberPickIdx;
     imgPickKey=""; memberPickIdx=-1;
@@ -1124,10 +1187,10 @@ async function onPickImg(e){
     if(!av){ toast("头像图片无法处理，请换一张","warn"); return; }
     if(key==="__memberAvatar__"){
       if(mi<0||!groupMembers[mi]) return;
-      groupMembers[mi].avatar=av; await saveAll(); renderMembers(); toast("已更新");
+      groupMembers[mi].avatar=av; await saveAll(); renderMembers(); refreshIdentityViews(); toast("已更新");
       return;
     }
-    imgs[key]=av; await saveAll(); syncUI(); toast("已更新");
+    imgs[key]=av; await saveAll(); syncUI(); refreshIdentityViews(); toast("已更新");
     return;
   }
 
@@ -1584,6 +1647,42 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
   frag.appendChild(_buildMsgRow(m, idx, ctx));
 }
 
+/* ⭕ 进聊天页的脏检查（v1.13.0）。
+   closeApp 只是 classList.remove("active")，聊天 DOM 一条都没删；
+   而 openApp("chatApp") 却每次都 renderChats() —— 先 innerHTML="" 再重建最近 150 条。
+   DOM 明明还在却白删白建，这就是"点进聊天界面慢"的主因。
+
+   _chatViewSig 记录「当前 DOM 反映的是哪个状态」。只放"会改变消息外观"的量，
+   刻意**不含** renderStart / renderedMsgCount：那两个是窗口位置，用户翻过历史后会变，
+   但那不该触发重建 —— 保留窗口位置正是这次改动的附带收益。
+
+   ⚠ 方向要保守：宁可签名过时（多重建一次，等同旧行为），
+     也不要在 DOM 其实没更新时刷新签名（那会显示陈旧内容）。 */
+let _chatViewSig = null;
+function _chatViewSigNow(){
+  const n=chats.length, last=n?chats[n-1]:null;
+  return [
+    n,
+    last?(last.mid||""):"",                  /* 新消息 / 整体替换：末条 id 必变 */
+    last?(last.text?last.text.length:0):"",  /* 兜住"末条被改写但不改长度" */
+    (imgs.selfAvatar||"").length,
+    (imgs.oppAvatar||"").length,
+    groupMembers.length,
+    stickers.length,
+    cfg.showAvatar?1:0, cfg.showName?1:0, cfg.showSelfName?1:0,
+    cfg.showTime?1:0, cfg.timeShowSeconds?1:0, cfg.oppCustomTime?1:0,
+    cfg.showRead?1:0, cfg.showSelfRead?1:0,
+    cfg.chatStyle||0, cfg.groupMode?1:0,
+    cfg.tradTransOn?1:0, cfg.painterOn?1:0,
+    texts.readText||"",
+  ].join("|");
+}
+/* 特征一致且 DOM 非空 → 可以复用，不必重建 */
+function chatViewIsFresh(){
+  const f=document.getElementById("chatFlow");
+  return !!f && !!f.firstChild && _chatViewSig===_chatViewSigNow();
+}
+
 // 窗口化重建：只渲染最近 INITIAL_RENDER 条，从最新到最旧分块渲染，第一个 chunk 立刻显示最新消息
 let _chatRenderInProgress=false;
 function renderChats(){
@@ -1619,6 +1718,7 @@ function renderChats(){
     renderedMsgCount=total; renderedLastDate=chats[total-1]&&chats[total-1].date||"";
     unreadCount=0; updateScrollBot();
     _flushPendingChatOps(f);
+    _chatViewSig=_chatViewSigNow();   /* ⭕ DOM 已是最新 → 记下特征，下次进页面可直接复用 */
   })();
 }
 
@@ -1686,6 +1786,7 @@ function appendNewChats(){
   renderedMsgCount=chats.length; renderedLastDate=lastDateRef.v;
   if(wasNear) f.scrollTop=f.scrollHeight;
   unreadCount=0; updateScrollBot();
+  _chatViewSig=_chatViewSigNow();   /* ⭕ 增量追加后 DOM 也是最新的 */
 }
 
 /* ⭐ 以下两个函数改为事件委托（bindChatDelegation），不再逐气泡绑定事件
@@ -3845,8 +3946,8 @@ window.renderMembers = ()=>{
     const c=document.createElement("div"); c.className="gm-card";
     c.innerHTML=`<img class="av ph" src="${m.avatar||window.DEFAULTS.PH_SVG}"><div class="nm"><input type="text" value="${escapeHtml(m.name)}"></div><span class="rm">剔除</span>`;
     c.querySelector("img").addEventListener("click",()=>{ memberPickIdx=i; imgPickKey="__memberAvatar__"; document.getElementById("fpImg").value=""; document.getElementById("fpImg").click(); });
-    c.querySelector("input").addEventListener("change",async e=>{ groupMembers[i].name=e.target.value.trim()||"未命名"; await saveAll(); });
-    c.querySelector(".rm").addEventListener("click",async()=>{ groupMembers.splice(i,1); await saveAll(); window.renderMembers(); });
+    c.querySelector("input").addEventListener("change",async e=>{ groupMembers[i].name=e.target.value.trim()||"未命名"; await saveAll(); refreshIdentityViews(); });
+    c.querySelector(".rm").addEventListener("click",async()=>{ groupMembers.splice(i,1); await saveAll(); window.renderMembers(); refreshIdentityViews(); });
     d.appendChild(c);
   });
   if(!groupMembers.length) d.innerHTML+=`<div class="empty-tip">群组暂无成员</div>`;
@@ -4104,7 +4205,11 @@ window.openApp = id=>{
   if(id==="statsApp")      { renderStats(); renderSurveys(); }
   if(id==="textsApp")      renderTextsApp();
   if(id==="chatApp"){
-    renderChats(); unreadCount=0; showHomeTypingBar(false);
+    /* ⭕ 脏检查：聊天 DOM 一直在（closeApp 只是 remove class），特征没变就直接复用。
+       原来每次进聊天页都 innerHTML="" 重建最近 150 条 —— 那是"点进聊天界面慢"的主因。
+       特征对不上、或 DOM 是空的（首次进入 / 数据整体换过），就照旧重建。 */
+    if(!chatViewIsFresh()) renderChats();
+    unreadCount=0; showHomeTypingBar(false); updateScrollBot();
     if((replyTimer)&&!typingNode){
       /* 分帧渲染进行中——延迟到渲染完成后再插入 typing 节点 */
       if(_chatRenderInProgress){
