@@ -123,9 +123,16 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.15.2";
+const APP_VERSION = "1.15.3";
 const APP_BUILD   = "2026-09-25";
 const APP_CHANGELOG = [
+  { v:"1.15.3", d:"2026-09-25", items:[
+    "修复：云端字卡库 / 表情库**刷新后再导入会叠加** —— 已导入的项标「已导入」并禁止勾选，「全选」只选本地还缺的那些",
+    "两处导入收尾再跑一次内容去重兜底，任何漏网的键不一致都不会在库里留下重复",
+    "修复：云端库的「选中项」拿**渲染下标当身份** —— 字卡那侧会导错行（潜在），表情那侧一用搜索就导错（活的）",
+    "字卡下标改取未过滤原下标、表情下标改取 _cskData 的原始位置：筛选只影响显示，不影响身份",
+    "说明：这批修复本被追加进 v1.15.2 段落，但 v1.15.2 已发布（1b43acc）—— 同号两份代码就没法靠版本号判断修复到没到，故另起一号",
+  ]},
   { v:"1.15.2", d:"2026-09-25", items:[
     "修复：字卡库 / 表情包库出现重复内容（**是云同步造成的**）",
     "原因①：云端导入生成的 id 是 `c`/`sk` + Date.now()，两台设备各自导入同一批云端内容 → id 不同 → 合并时当成两条，同步一轮多一份",
@@ -3384,6 +3391,9 @@ function _dedupeBy(list, keyFn, better){
 const _mergeCards    = (l,r)=>_dedupeBy(_mergeByKey(l,r,_byId), _cardKey);
 const _mergeStickers = (l,r)=>_dedupeBy(_mergeByKey(l,r,_byId), s=>_stickerKey(s&&s.src),
                                         (a,b)=>_stickerRank(a)-_stickerRank(b));
+/* 本地库的内容键集合 —— 云端库里"已经导入过"的项靠它认出来 */
+function _localCardKeys(){ return new Set(cards.map(_cardKey)); }
+function _localStickerKeys(){ return new Set(stickers.map(s=>_stickerKey(s&&s.src))); }
 /* 留言板：帖子按 id 并集，**同一条帖子的评论也要并集**（两端可能各回了一条） */
 function _mergeMsgs(local, remote){
   const out = _mergeByKey(local, remote, _byId);
@@ -6663,6 +6673,7 @@ window._getAllCloudCardItems = () => _allCloudCardItems(window._cclGroups || [])
 function renderCloudCardGroupList(groups) {
   const el = document.getElementById("cclList");
   if (!el) return;
+  const have = _localCardKeys();   /* ⭕ 本地已有字卡的内容键，用来标「已导入」 */
 
   if (!groups.length) {
     el.innerHTML = '<div class="cml-empty">未找到匹配分组</div>';
@@ -6670,12 +6681,14 @@ function renderCloudCardGroupList(groups) {
   }
 
   el.innerHTML = groups.map((g, gi) => {
-    const items = (g.items || []).filter(item => {
-      const t = _cloudItemText(item);
-      return t.length > 0;
-    });
+    /* ⛔ 下标必须留**原始位置**：下面会滤掉空正文项，若拿过滤后的位置当身份，
+       `importSelectedCards` 按未过滤的 `g.items[idx]` 取 → 勾第 N 行、导入的是别的行。
+       筛选只影响显示，不影响身份。 */
+    const items = (g.items || [])
+      .map((item, oi) => ({ item, oi }))
+      .filter(x => _cloudItemText(x.item).length > 0);
     if (!items.length) return "";
-    const preview = items.slice(0, 3).map(item => {
+    const preview = items.slice(0, 3).map(({ item }) => {
       const txt = _cloudItemText(item);
       return `<span class="ccl-preview-item">${escapeHtml(txt.length > 18 ? txt.slice(0, 18) + "…" : txt)}</span>`;
     }).join("");
@@ -6692,15 +6705,18 @@ function renderCloudCardGroupList(groups) {
         <span class="ccl-group-cnt">${items.length} 条</span>
       </div>
       <div class="ccl-group-body">
-        ${items.map((item, ii) => {
+        ${items.map(({ item, oi }) => {
           const text = _cloudItemText(item);
           const translation = _cloudItemTranslation(item);
-          const id = `${g.cat}::${ii}`;
-          const checked = window._cclSelected?.has(id) || false;
-          return `<label class="ccl-item-row">
-            <input type="checkbox" class="ccl-item-cb" data-id="${escapeAttr(id)}" data-cat="${escapeAttr(g.cat)}" data-text="${escapeAttr(text)}" data-tr="${escapeAttr(translation)}" ${checked ? "checked" : ""} onchange="toggleCloudCardItem(this,'${escapeAttr(id)}')">
+          const id = `${g.cat}::${oi}`;   /* ⛔ oi = g.items 里的原下标，不是过滤后的位置 */
+          /* ⭕ 与表情库同一个道理：本地已有的标「已导入」并禁止再勾选 */
+          const dup = !!(_cardKey({ text, cat: g.cat }) && have.has(_cardKey({ text, cat: g.cat })));
+          const checked = !dup && (window._cclSelected?.has(id) || false);
+          return `<label class="ccl-item-row"${dup ? ' style="opacity:.5"' : ""}>
+            <input type="checkbox" class="ccl-item-cb" data-id="${escapeAttr(id)}" data-cat="${escapeAttr(g.cat)}" data-text="${escapeAttr(text)}" data-tr="${escapeAttr(translation)}" ${dup ? "disabled" : ""} ${checked ? "checked" : ""} onchange="toggleCloudCardItem(this,'${escapeAttr(id)}')">
             <span class="ccl-item-text">${escapeHtml(text)}</span>
             ${translation ? `<span class="ccl-item-tr">${escapeHtml(translation)}</span>` : ""}
+            ${dup ? '<span class="ccl-item-tr">已导入</span>' : ""}
           </label>`;
         }).join("")}
       </div>
@@ -6715,6 +6731,7 @@ window.toggleCloudCardGroup = (cb, cat) => {
   const body = cb.closest(".ccl-group")?.querySelector(".ccl-group-body");
   if (body) {
     body.querySelectorAll(".ccl-item-cb").forEach(itemCb => {
+      if (itemCb.disabled) return;        // ⭕ 已导入的不跟着全选/取消，避免再进一份
       itemCb.checked = checked;
       const id = itemCb.dataset.id;
       if (id) { if (checked) window._cclSelected.add(id); else window._cclSelected.delete(id); }
@@ -6739,11 +6756,14 @@ function updateCclImportBtn() {
 
 window.selectAllCloudCards = () => {
   const all = window._cclGroups || [];
+  const have = _localCardKeys();      /* ⭕ 跳过已导入的 */
   window._cclSelected = new Set();
   all.forEach(g => {
-    (g.items || []).forEach((line, ii) => {
-      const id = `${g.cat}::${ii}`;
-      window._cclSelected.add(id);
+    (g.items || []).forEach((item, ii) => {
+      const t = _cloudItemText(item);
+      const k = _cardKey({ text: t, cat: g.cat });
+      if (k && have.has(k)) return;
+      window._cclSelected.add(`${g.cat}::${ii}`);
     });
   });
   renderCloudCardGroupList(all);
@@ -6788,11 +6808,12 @@ window.importSelectedCards = async () => {
     cards.push({ id: "c" + Date.now() + (added++), text: item.text, translation: item.translation, cat: item.cat });
   });
 
+  cards = _dedupeBy(cards, _cardKey);   /* ⭕ 兜底：按内容键再收一遍 */
   await saveAll();
   renderCards();
   closeModal();
   const msg = `已导入 ${added} 条`;
-  if (dupes.length) toast(`${msg}（跳过 ${dupes.length} 条重复）`);
+  if (dupes.length) toast(`${msg}（跳过 ${dupes.length} 条已导入）`);
   else toast(msg);
 };
 
@@ -6953,13 +6974,23 @@ function renderCloudStickerGrid(stks) {
   if (!el) return;
   if (!stks.length) { el.innerHTML = '<div class="cml-empty">未找到表情</div>'; return; }
 
-  el.innerHTML = stks.map((s, i) => {
+  /* ⭕ 本地已有的标成「已导入」并**禁止再勾选**：
+     否则刷新一次云端列表、再全选导一遍，同一批表情就又进了一份 —— 这就是"重新拉取会叠加"。 */
+  /* ⛔ 下标要回**原始全量数组**里取：stks 可能是搜索过滤后的子集，
+     若拿子集下标当身份，搜索状态下勾选 → importSelectedStickers 按全量 _cskData[idx] 取
+     → 导进来的是别的表情。筛选只影响显示，不影响身份。 */
+  const full = window._cskData || stks;
+  const have = _localStickerKeys();
+  el.innerHTML = stks.map(s => {
+    const oi = full.indexOf(s);
+    if (oi < 0) return "";
     const src = _stickerSrc(s);
     const name = _stickerName(s);
     const cat = s.catLabel || "";
-    const id = `csk_${i}`;
-    const checked = window._cskSelected?.has(id) || false;
-    return `<div class="csk-item">
+    const id = `csk_${oi}`;
+    const dup = !!(_stickerKey(src) && have.has(_stickerKey(src)));
+    const checked = !dup && (window._cskSelected?.has(id) || false);
+    return `<div class="csk-item"${dup ? ' style="opacity:.5"' : ""}>
       <div class="csk-img-wrap">
         <img src="${escapeHtml(src)}" loading="lazy" onerror="this.parentElement.classList.add('broken')">
         ${!src ? '<div class="csk-broken">无图</div>' : ""}
@@ -6967,8 +6998,8 @@ function renderCloudStickerGrid(stks) {
       <div class="csk-name">${escapeHtml(name)}</div>
       ${cat ? `<div class="csk-cat">${escapeHtml(cat)}</div>` : ""}
       <label class="csk-check">
-        <input type="checkbox" data-id="${escapeAttr(id)}" data-src="${escapeAttr(src)}" ${checked ? "checked" : ""} onchange="toggleCloudStickerItem(this,'${escapeAttr(id)}')">
-        <span>${checked ? "已选" : "选择"}</span>
+        <input type="checkbox" data-id="${escapeAttr(id)}" data-src="${escapeAttr(src)}" ${dup ? "disabled" : ""} ${checked ? "checked" : ""} onchange="toggleCloudStickerItem(this,'${escapeAttr(id)}')">
+        <span>${dup ? "已导入" : (checked ? "已选" : "选择")}</span>
       </label>
     </div>`;
   }).join("");
@@ -6990,8 +7021,13 @@ function updateCskImportBtn() {
 }
 
 window.selectAllCloudStickers = () => {
+  /* ⭕ 跳过已导入的：全选只选本地还缺的那些 */
+  const have = _localStickerKeys();
   window._cskSelected = new Set();
-  (window._cskData || []).forEach((s, i) => window._cskSelected.add(`csk_${i}`));
+  (window._cskData || []).forEach((s, i) => {
+    const k = _stickerKey(_stickerSrc(s));
+    if (!(k && have.has(k))) window._cskSelected.add(`csk_${i}`);
+  });
   renderCloudStickerGrid(window._cskData || []);
 };
 
@@ -7015,10 +7051,12 @@ window.importSelectedStickers = async () => {
     added++;
   });
 
+  /* ⭕ 兜底：万一有漏网的键不一致，这里按内容键再收一遍，保证库里不留重复 */
+  stickers = _dedupeBy(stickers, s=>_stickerKey(s&&s.src), (a,b)=>_stickerRank(a)-_stickerRank(b));
   await saveAll();
   renderStickers();
   closeModal();
-  toast(skipped ? `已导入 ${added} 个（跳过 ${skipped} 个重复）` : `已导入 ${added} 个`);
+  toast(skipped ? `已导入 ${added} 个（跳过 ${skipped} 个已导入）` : `已导入 ${added} 个`);
 };
 
 /* ═══ 库内重复清理 ═══
