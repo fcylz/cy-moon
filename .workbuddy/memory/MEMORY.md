@@ -29,6 +29,12 @@
 - **只在 `.workbuddy/memory/` 维护**（`YYYY-MM-DD.md` 日记 + `MEMORY.md` 长期笔记）。
   `.codebuddy/memory/` 是旧工具名留下的冗余副本，内容已于 2026-09-21 全部并入 `.workbuddy/`，
   **不要再往那边写、也不要从那边读**
+- ⚠ **分叉会复发（2026-09-25 又发生一次）**：另一个会话（CodeBuddy 工具名）不知道这个约定，
+  把 v1.15.2 的记录写进了 `.codebuddy/memory/`。**每次接手前先比对两边**，把新增内容并过来：
+  ```
+  比对手法：Node 读两个 MEMORY.md，按行做 Set 差集，看"只在 A 里"的行
+  ```
+  合并方向：`.workbuddy/` 是主线（更全），`.codebuddy/` 可能有**主线缺的新增节** → 按节并入
 - `.gitignore` 只放行 `.workbuddy/memory/`；`.workbuddy/` 下其余（skills / 缓存 / 配置）不进仓库
   （本仓库 public）。原有关键规则：`github-pat-token.txt` / `*.code-workspace` / `ZY/` / `word-min.json`
 - ⛔ **改已跟踪的文件前先 `git show HEAD:<file>` 看一眼**，别用 Write 盲写 ——
@@ -127,6 +133,25 @@
   （本机私有，外传 = sha 错乱与 409 的源头）
 - ⚠ 多设备测试前**关掉「自动推送」**，否则测试数据持续污染云端
 - ⛔ 令牌存 localStorage，**绝不写进代码**
+
+## ⭕ 云同步合并：id 判重不够，必须叠内容键（v1.15.2 教训）
+- 云端导入的 id = `"c"/"sk" + Date.now()`，**跨设备必然不同** → `_mergeById` 会把两台设备
+  各导入的同一批云端内容算成两条 → 同步一轮多一份（用户报"库里有重复"的真正原因）
+- ✅ 现在 cards/stickers 用 `_mergeCards`/`_mergeStickers`：先 `_mergeByKey(id)` 并集，
+  再 `_dedupeBy` 按内容键收一遍（字卡=`cat+正文`，表情=`/Meme/` 之后的路径）
+- 表情 src 域名换过（raw→jsdelivr）→ 判重要**抹掉域名**，同图优先留非 raw
+  （`_stickerRank`：raw 本机不可达 → 排后面）
+- 判重标准必须在**合并层 + 导入层**用同一套键（`_cardKey`/`_stickerKey`），否则两边各判各的照样漏
+- 历史重复靠 `window.dedupeLib(auto)` 清理，启动 1.5s 后自动跑一次，幂等
+- ⚠ **副作用**：内容完全相同的两条**无法共存**了（本来可用于"提高某句抽中概率"）。
+  这是刻意取舍——完全相同的条目只会让抽卡概率倾斜，没有功能价值
+
+## ⭕ 云端库（字卡/表情/音乐）索引缓存
+- ⛔ 缓存曾**无 TTL** 且刷新函数**没接进 UI** → 仓库里新增了内容，本机永远拉不到
+- 现 `CLOUD_INDEX_TTL = 6h` + fetch 追加 `t=Date.now()` 绕过 CDN 缓存
+  + 两个云端库弹窗加「刷新云端」按钮（刷新后**就地重渲染**列表）
+- ⛔ `updateCloudStickerStatus` / `updateCloudCardStatus` 的目标元素**只在弹窗内存在**，
+  而 fetch 先于 render → 必须在 render 之后**补调一次**，否则状态永远不显示
 
 ## 内容 / 语料
 - **不打算再增加字卡** → 组字功能要靠「云端字典」或内置语料养活，不能指望字卡库

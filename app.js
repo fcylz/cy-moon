@@ -123,9 +123,21 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.15.1";
-const APP_BUILD   = "2026-09-21";
+const APP_VERSION = "1.15.2";
+const APP_BUILD   = "2026-09-25";
 const APP_CHANGELOG = [
+  { v:"1.15.2", d:"2026-09-25", items:[
+    "修复：字卡库 / 表情包库出现重复内容（**是云同步造成的**）",
+    "原因①：云端导入生成的 id 是 `c`/`sk` + Date.now()，两台设备各自导入同一批云端内容 → id 不同 → 合并时当成两条，同步一轮多一份",
+    "现在 cards / stickers 合并改为**内容级去重**（字卡 = 分类+正文，表情 = 图片路径），并集之后再收一遍",
+    "原因②：表情 src 的域名换过（raw.githubusercontent.com → cdn.jsdelivr.net），同一张图两个地址各占一条，src 判重失效",
+    "表情去重键统一取 `/Meme/` 之后的路径，域名差异消失；同图时优先保留打得开的那条（raw 在本机不可达）",
+    "导入云端字卡 / 云端表情 / 粘贴链接 三处判重同步改用同一套键，不再各判各的",
+    "新增 `dedupeLib()`：把库里**已有的**重复项收掉，启动时自动跑一次（幂等，没清掉东西就不写盘，清掉了会提示）",
+    "修复：云端新增的表情包拉不到 —— 索引缓存**永不过期**，而且刷新按钮根本没接进 UI",
+    "云端索引缓存加 6 小时 TTL，过期自动重拉；拉取 URL 追加时间戳绕过浏览器/CDN 缓存",
+    "云端字卡库、云端表情库弹窗新增「刷新云端」按钮，刷新后就地重渲染列表，并显示云端条数状态行",
+  ]},
   { v:"1.15.1", d:"2026-09-21", items:[
     "修复：设置页开关（含云同步那三个）点下去反应迟钝 —— 要等 IndexedDB 写盘完成后才更新视觉",
     "原因：老的写法是 `cfg=…; await saveAll(); syncUI();`，把 UI 更新排在等写盘之后，手机上要等几十~几百 ms",
@@ -590,6 +602,8 @@ async function init() {
   /* ⭕ 老数据图片体积治理：要解码一批老图，**不能挡开屏** —— 延到首帧之后再跑。
      受 cfg.imgSqueeze 版本门槛保护，一辈子只跑一次。 */
   setTimeout(()=>{ _migrateSqueezeImages().then(d=>{ if(d) saveAllDebounced(); }).catch(()=>{}); }, 1200);
+  /* ⭕ 字卡/表情重复自检：把历史遗留的重复项收一遍（幂等，没清掉东西就不写盘） */
+  setTimeout(()=>{ try{ window.dedupeLib(true); }catch(e){} }, 1500);
   /* ⭕ 留言板：开屏时若彼有新留言就提醒。
      4.2s 是刻意晚于欢迎页（3s 淡出 + .8s 收尾）—— 否则弹窗会被开屏动画盖住看不见 */
   setTimeout(checkBoardUnread, 4200);
@@ -3329,6 +3343,47 @@ function _keyBy(field){
 }
 const _byId = _keyBy("id");
 const _mergeById = (l,r)=>_mergeByKey(l,r,_byId);
+
+/* ─── 内容级去重 ───
+   ⭕ id 判重对字卡/表情是**不够**的：云端导入生成的 id 是 "c"/"sk" + Date.now()，
+   两台设备各自导入同一批云端内容 → id 必然不同 → _mergeById 当成两条，
+   于是「每同步一次就多一份」，这就是库里出现重复内容的来源。
+   所以并集之后还得按**内容**再收一遍：
+     字卡 → 分类 + 正文；表情 → 图片路径（抹掉域名差异）。
+   ⛔ 只判"内容完全相同"，不做模糊匹配 —— 宁可漏删，不可误删。 */
+function _cardKey(c){
+  if(!c || typeof c!=="object") return "";
+  const t=String(c.text||"").trim();
+  return t ? (String(c.cat||"")+"|"+t) : "";   // 空正文不参与判重
+}
+/* ⭕ 同一个表情的 src 可能是 raw.githubusercontent.com（旧默认值）也可能是
+   cdn.jsdelivr.net（新默认值）—— 一张图两个域名 = 两条记录，导入层的 src 判重
+   同样失效。统一取 /Meme/ 之后的路径做键，域名差异就消失了。 */
+function _stickerKey(src){
+  const s=String(src||"");
+  if(!s) return "";
+  if(/^data:/.test(s)) return s;               // 本地上传的 base64：整串比
+  const m=s.match(/\/Meme\/(.+)$/);
+  if(m) return m[1].toLowerCase();
+  return s.replace(/^https?:\/\//,"").toLowerCase();
+}
+/* raw.githubusercontent.com 本机不可达 → 同图时优先留下打得开的那条 */
+function _stickerRank(s){ return /raw\.githubusercontent\.com/.test(String((s&&s.src)||"")) ? 1 : 0; }
+/* 按内容键收重，保留**更优**的一条（better(a,b)<0 → a 胜），其余保持原顺序 */
+function _dedupeBy(list, keyFn, better){
+  const out=[], pos=new Map();
+  for(const it of (Array.isArray(list)?list:[])){
+    const k=keyFn(it);
+    if(!k){ out.push(it); continue; }          // 取不到内容键 = 无从判重，原样保留
+    if(!pos.has(k)){ pos.set(k, out.length); out.push(it); continue; }
+    const at=pos.get(k);
+    if(better && better(it, out[at])<0) out[at]=it;
+  }
+  return out;
+}
+const _mergeCards    = (l,r)=>_dedupeBy(_mergeByKey(l,r,_byId), _cardKey);
+const _mergeStickers = (l,r)=>_dedupeBy(_mergeByKey(l,r,_byId), s=>_stickerKey(s&&s.src),
+                                        (a,b)=>_stickerRank(a)-_stickerRank(b));
 /* 留言板：帖子按 id 并集，**同一条帖子的评论也要并集**（两端可能各回了一条） */
 function _mergeMsgs(local, remote){
   const out = _mergeByKey(local, remote, _byId);
@@ -3399,8 +3454,10 @@ function _syncApply(b, opt){
   if(b.chats){ chats = take(chats, b.chats, _mergeChats); if(typeof markStatsDirty==="function") markStatsDirty(); }
   if(b.msgs){ msgs = take(msgs, b.msgs, _mergeMsgs); if(typeof normalizeMsgs==="function") normalizeMsgs(); }
   if(b.members) groupMembers = take(groupMembers, b.members, _mergeById);
-  if(b.cards) cards = take(cards, b.cards, _mergeById);
-  if(b.stickers) stickers = take(stickers, b.stickers, _mergeById);
+  /* ⭕ 字卡/表情走内容级去重（_mergeCards / _mergeStickers）：光按 id 并集会让
+     两台设备各自导入的同一批云端内容各算一条，同步一轮多一份。 */
+  if(b.cards) cards = take(cards, b.cards, _mergeCards);
+  if(b.stickers) stickers = take(stickers, b.stickers, _mergeStickers);
   if(b.surveys){
     if(b.surveys.surveys) surveys = take(surveys, b.surveys.surveys, _mergeById);
     if(b.surveys.surveyRecords) surveyRecords = take(surveyRecords, b.surveys.surveyRecords, _mergeById);
@@ -4235,12 +4292,14 @@ window.addStickersFromUrls = async () => {
   const lines=ta.value.split("\n").map(s=>s.trim()).filter(Boolean);
   if(!lines.length){ toast("请先粘贴链接","warn"); return; }
   if(stickers.length + lines.length > MAX_STICKERS){ toast(`表情包已达上限 ${MAX_STICKERS} 个`,"warn"); return; }
-  const existing=new Set(stickers.map(s=>s.src));
+  /* ⭕ 用 _stickerKey 而不是裸 src：同一张图的 raw / jsdelivr 两个域名算同一条 */
+  const existing=new Set(stickers.map(s=>_stickerKey(s.src)));
   let added=0, skipped=0;
   lines.forEach((url,i)=>{
-    if(existing.has(url)){ skipped++; return; }
+    const k=_stickerKey(url);
+    if(k && existing.has(k)){ skipped++; return; }
     stickers.push({id:"sk"+Date.now()+i, src:url, type:"url", shielded:false, addedAt:Date.now()});
-    existing.add(url); added++;
+    existing.add(k); added++;
   });
   await saveAll(); window.renderStickers(); closeModal();
   toast(skipped?`已添加 ${added} 个（跳过 ${skipped} 个重复）`:`已添加 ${added} 个`);
@@ -6427,6 +6486,14 @@ window.playMsgSong = async (idx) => {
 
 // ═══ 云端字卡库 ═══
 const CLOUD_CARD_LF_KEY = "cy-card-index";
+/* ⭕ 云端索引的本地缓存有效期。
+   原来是"只要缓存存在就永远用" —— 你在仓库里新增了表情/字卡，本机却永远停在
+   第一次拉到的那份，看上去就是"云端加了但拉不到"。现在超过 TTL 就重新拉一次。 */
+const CLOUD_INDEX_TTL = 6*3600*1000;
+/* ⭕ 给索引 URL 追一个时间戳：绕过浏览器/CDN 缓存，保证拿到的是仓库里最新的那份 */
+function _cloudIndexUrl(base){
+  return base + (base.indexOf("?")>=0 ? "&" : "?") + "t=" + Date.now();
+}
 
 let _cardLF = null;
 function _ensureCardLF() {
@@ -6481,7 +6548,8 @@ async function fetchCloudCards(forceRefresh) {
   if (!forceRefresh && lf) {
     try {
       const cached = await lf.getItem(CLOUD_CARD_LF_KEY);
-      if (cached && cached.cards && cached.cards.length) {
+      /* ⭕ 缓存也要过期：否则云端新增的字卡永远进不来 */
+      if (cached && cached.cards && cached.cards.length && Date.now()-cached.at < CLOUD_INDEX_TTL) {
         cloudCardCache = cached.cards;
         updateCloudCardStatus(`已缓存 ${cached.cards.length} 组 · ${new Date(cached.at).toLocaleDateString()}`);
         return cached.cards;
@@ -6491,7 +6559,7 @@ async function fetchCloudCards(forceRefresh) {
 
   updateCloudCardStatus("正在连接…");
   try {
-    const res = await fetch(indexUrl);
+    const res = await fetch(_cloudIndexUrl(indexUrl));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const cardsData = _normaliseCloudCards(data);
@@ -6526,8 +6594,11 @@ window.refreshCloudCards = async () => {
   const lf = _ensureCardLF();
   if (lf) { try { await lf.removeItem(CLOUD_CARD_LF_KEY); } catch(e) {} }
   cloudCardCache = null;
-  await fetchCloudCards(true);
-  toast("字卡库已刷新");
+  const groups = await fetchCloudCards(true);
+  /* ⭕ 弹窗还开着就就地重渲染 —— 否则刷新完了界面还是旧列表 */
+  if (document.getElementById("cclList")) renderCloudCardModal(groups || []);
+  toast(groups && groups.length ? `字卡库已刷新 · 共 ${groups.length} 组` : "字卡库刷新失败","ok");
+  return groups;
 };
 
 window.openCloudCardLibrary = async () => {
@@ -6556,13 +6627,17 @@ function renderCloudCardModal(groups) {
     <div class="ccl-actions">
       <button class="pill-btn" onclick="importSelectedCards()" id="cclImportBtn" disabled>导入选中</button>
       <button class="pill-btn" onclick="selectAllCloudCards()">全选</button>
+      <button class="pill-btn" onclick="window.refreshCloudCards()">刷新云端</button>
       <button class="pill-btn" onclick="closeModal()">关闭</button>
     </div>
+    <div id="cloudCardStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:6px 0 0;"></div>
   `;
   modal("云端字卡库", html);
   window._cclGroups = groups;
   window._cclSelected = new Set();
   renderCloudCardGroupList(groups);
+  /* ⭕ 状态行是弹窗里的元素 —— 拉的时候它还不存在，所以渲染完补一次 */
+  updateCloudCardStatus(`云端 ${groups.length} 组 · ${totalItems} 条`);
 
   // 监听复选框变化
   document.getElementById("cclList")?.addEventListener("change", updateCclImportBtn);
@@ -6693,12 +6768,16 @@ window.importSelectedCards = async () => {
 
   if (!selected.length) { toast("无有效内容"); return; }
 
+  /* ⭕ 判重键与同步合并层统一（cat + 正文），避免两边标准不一致 */
+  const have = new Set(cards.map(_cardKey));
   const dupes = [];
   const fresh = [];
   selected.forEach(item => {
-    if (cards.some(c => c.text === item.text && c.cat === item.cat)) {
+    const k = _cardKey({ text: item.text, cat: item.cat });
+    if (k && have.has(k)) {
       dupes.push(item);
     } else {
+      if (k) have.add(k);
       fresh.push(item);
     }
   });
@@ -6759,7 +6838,8 @@ async function fetchCloudStickers(forceRefresh) {
   if (!forceRefresh && lf) {
     try {
       const cached = await lf.getItem(CLOUD_STICKER_LF_KEY);
-      if (cached && cached.stickers && cached.stickers.length) {
+      /* ⭕ 同上：缓存过期就重拉，云端新增的表情才拉得到 */
+      if (cached && cached.stickers && cached.stickers.length && Date.now()-cached.at < CLOUD_INDEX_TTL) {
         cloudStickerCache = cached.stickers;
         updateCloudStickerStatus(`已缓存 ${cached.stickers.length} 个 · ${new Date(cached.at).toLocaleDateString()}`);
         return cached.stickers;
@@ -6769,7 +6849,7 @@ async function fetchCloudStickers(forceRefresh) {
 
   updateCloudStickerStatus("正在连接…");
   try {
-    const res = await fetch(indexUrl);
+    const res = await fetch(_cloudIndexUrl(indexUrl));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const stkData = _normaliseCloudStickers(data);
@@ -6803,8 +6883,11 @@ window.refreshCloudStickers = async () => {
   const lf = _ensureStickerLF();
   if (lf) { try { await lf.removeItem(CLOUD_STICKER_LF_KEY); } catch(e) {} }
   cloudStickerCache = null;
-  await fetchCloudStickers(true);
-  toast("表情库已刷新");
+  const stks = await fetchCloudStickers(true);
+  /* ⭕ 同上：弹窗开着就重渲染，否则刷新了也看不出来 */
+  if (document.getElementById("cskGrid")) renderCloudStickerModal(stks || []);
+  toast(stks && stks.length ? `表情库已刷新 · 共 ${stks.length} 个` : "表情库刷新失败","ok");
+  return stks;
 };
 
 window.openCloudStickerLibrary = async () => {
@@ -6824,14 +6907,17 @@ function renderCloudStickerModal(stks) {
     <div class="ccl-actions">
       <button class="pill-btn" onclick="importSelectedStickers()" id="cskImportBtn" disabled>导入选中</button>
       <button class="pill-btn" onclick="selectAllCloudStickers()">全选</button>
+      <button class="pill-btn" onclick="window.refreshCloudStickers()">刷新云端</button>
       <button class="pill-btn" onclick="closeModal()">关闭</button>
     </div>
+    <div id="cloudStickerStatus" style="font-size:calc(var(--fs)*.7);color:var(--text-mute);margin:6px 0 0;"></div>
   `;
   modal("云端表情库", html);
   window._cskData = stks;
   window._cskSelected = new Set();
   renderCloudStickerGrid(stks);
   document.getElementById("cskGrid")?.addEventListener("change", updateCskImportBtn);
+  updateCloudStickerStatus(`云端 ${stks.length} 个`);   /* ⭕ 同上：渲染完补一次状态 */
 }
 
 window.filterCloudStickers = () => {
@@ -6912,7 +6998,8 @@ window.selectAllCloudStickers = () => {
 window.importSelectedStickers = async () => {
   if (!window._cskSelected || window._cskSelected.size === 0) { toast("未选择表情"); return; }
   const data = window._cskData || [];
-  const existing = new Set(stickers.map(s => s.src));
+  /* ⭕ 同上：按内容键判重，raw / jsdelivr 两种域名不会各进一份 */
+  const existing = new Set(stickers.map(s => _stickerKey(s.src)));
   let added = 0, skipped = 0;
 
   window._cskSelected.forEach(id => {
@@ -6921,9 +7008,10 @@ window.importSelectedStickers = async () => {
     if (!s) return;
     const src = _stickerSrc(s);
     if (!src) return;
-    if (existing.has(src)) { skipped++; return; }
+    const k = _stickerKey(src);
+    if (k && existing.has(k)) { skipped++; return; }
     stickers.push({ id: "sk" + Date.now() + added, src, type: "url", shielded: false, addedAt: Date.now() });
-    existing.add(src);
+    existing.add(k);
     added++;
   });
 
@@ -6931,6 +7019,25 @@ window.importSelectedStickers = async () => {
   renderStickers();
   closeModal();
   toast(skipped ? `已导入 ${added} 个（跳过 ${skipped} 个重复）` : `已导入 ${added} 个`);
+};
+
+/* ═══ 库内重复清理 ═══
+   历史遗留的两类重复：①两台设备各自导入过同一批云端内容（id 不同）；
+   ②表情的 raw / jsdelivr 两种域名各占一条。合并层已经不会再产生新的，
+   这里把**已经存在**的收掉：按内容键保留一条（表情优先留打得开的那条）。
+   ⛔ 只删内容键完全相同的冗余项，幂等 —— 跑多少次结果都一样。
+   auto=true = 启动自检：清掉了才提示，没清掉就完全静默。 */
+window.dedupeLib = async (auto) => {
+  const c0 = cards.length, s0 = stickers.length;
+  cards = _dedupeBy(cards, _cardKey);
+  stickers = _dedupeBy(stickers, s=>_stickerKey(s&&s.src), (a,b)=>_stickerRank(a)-_stickerRank(b));
+  const dc = c0-cards.length, ds = s0-stickers.length;
+  if(dc || ds){
+    await saveAll();
+    try{ window.renderCards(); window.renderStickers(); }catch(e){}
+    toast(`${auto?"已自动清理重复内容":"已清理重复"}：字卡 ${dc} 条 · 表情 ${ds} 个`, "ok");
+  } else if(!auto) toast("库里没有重复内容");
+  return {cards:dc, stickers:ds};
 };
 
 /* ════════════════════════════════════════════════════════

@@ -67,3 +67,18 @@
   + `git sparse-checkout set data` → 加文件 → `git -c user.name=... -c user.email=... commit` → push。
   ⚠ 分支是 **master**；HTTP/CDN 只能读，写必须走 git。
 - 组字与抽卡是**概率共存**：`recombProb`（默认 15%）命中才造句，其余仍抽字卡，失败自动退回抽卡。
+
+## ⭕ 云同步合并：id 判重不够，必须叠内容键（v1.15.2 教训）
+- 云端导入的 id = `"c"/"sk" + Date.now()`，**跨设备必然不同** → `_mergeById` 会把两台设备各导入的
+  同一批云端内容算成两条 → 同步一轮多一份（用户报"库里有重复"的真正原因）。
+- ✅ 现在 cards/stickers 用 `_mergeCards`/`_mergeStickers`：先 `_mergeByKey(id)` 并集，
+  再 `_dedupeBy` 按内容键收一遍（字卡=`cat+正文`，表情=`/Meme/` 之后的路径）。
+- 表情 src 域名换过（raw→jsdelivr）→ 判重要**抹掉域名**，同图优先留非 raw（raw 本机不可达，`_stickerRank`）。
+- 判重标准必须在**合并层 + 导入层**用同一套键（`_cardKey`/`_stickerKey`），否则两边各判各的照样漏。
+- 历史重复靠 `window.dedupeLib(auto)` 清理，启动自动跑一次，幂等。
+
+## ⭕ 云端库（字卡/表情/音乐）索引缓存
+- ⛔ 缓存曾**无 TTL** 且刷新函数没接 UI → 仓库里新增了内容本机永远拉不到。
+  现 `CLOUD_INDEX_TTL=6h` + fetch 追加 `t=Date.now()` 绕过 CDN 缓存 + 弹窗「刷新云端」按钮。
+- ⛔ `updateCloudStickerStatus` / `updateCloudCardStatus` 的目标元素只在弹窗内存在，
+  而 fetch 先于 render → 必须在 render 之后补调一次，否则状态永远不显示。
