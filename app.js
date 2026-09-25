@@ -123,9 +123,18 @@ const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.15.3";
+const APP_VERSION = "1.15.4";
 const APP_BUILD   = "2026-09-25";
 const APP_CHANGELOG = [
+  { v:"1.15.4", d:"2026-09-25", items:[
+    "新增：**已存在的重复内容**怎么清 —— 设置 → 数据 → 存储管理 → 清理重复内容",
+    "点它会先告诉你检测到多少条、判重标准是什么（字卡 = 分类+正文，表情 = 图片路径，raw/jsdelivr 算同一张），确认后才动数据",
+    "自动清理（每次启动 1.5s 后）也一直在跑：没清掉东西时完全静默，连写盘都没有；清掉了才提示一句",
+    "⛔ 只删内容键完全相同的冗余项，每种留一条；表情优先保留打得开的那条",
+    "⭕ 清理**不会让聊天里的表情失效**：消息存的是 stickerId，合并掉那条后会把引用改指到保留的那条（同一张图）",
+    "保留哪一条的优先级：打得开的（非 raw）> **有聊天在引用的** > 位置靠前的；引用块、留言板帖子/评论一并跟上",
+    "映射另存 `cfg.stickerAlias` 兜底，`_findSticker`（发送 / 屏蔽 / 缩略图缓存）统一走别名回退",
+  ]},
   { v:"1.15.3", d:"2026-09-25", items:[
     "修复：云端字卡库 / 表情库**刷新后再导入会叠加** —— 已导入的项标「已导入」并禁止勾选，「全选」只选本地还缺的那些",
     "两处导入收尾再跑一次内容去重兜底，任何漏网的键不一致都不会在库里留下重复",
@@ -3394,6 +3403,58 @@ const _mergeStickers = (l,r)=>_dedupeBy(_mergeByKey(l,r,_byId), s=>_stickerKey(s
 /* 本地库的内容键集合 —— 云端库里"已经导入过"的项靠它认出来 */
 function _localCardKeys(){ return new Set(cards.map(_cardKey)); }
 function _localStickerKeys(){ return new Set(stickers.map(s=>_stickerKey(s&&s.src))); }
+
+/* ⭕ 表情去重专用版：取舍规则同 _dedupeBy，但额外返回「被合并掉 → 保留下来」的 id 映射。
+   聊天里存的是 `stickerId`（引用锚点，不是图片本体），直接把多余那条删掉 = 老消息再也
+   找不到它 → 那批表情永久退化成占位图，正是 v1.14.x「顺手删了引用锚点」那个坑的翻版。
+   保留哪一条的优先级：① 打得开的（非 raw）② **有聊天在引用的** ③ 位置靠前的。 */
+function _dedupeStickersWithMap(list){
+  const src = Array.isArray(list) ? list : [];
+  const used = new Set();
+  for(const m of (Array.isArray(chats)?chats:[])) if(m && m.stickerId) used.add(m.stickerId);
+
+  const groups = new Map();
+  for(const it of src){
+    const k = _stickerKey(it && it.src);
+    if(!k) continue;                       // 取不到键 = 无从判重，原样保留
+    if(!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(it);
+  }
+  const keepOf = new Map(), map = new Map();
+  for(const [k, arr] of groups){
+    let keep = arr[0];
+    for(const it of arr){
+      if(_stickerRank(it) < _stickerRank(keep)) keep = it;
+      else if(_stickerRank(it) === _stickerRank(keep) && !used.has(keep.id) && used.has(it.id)) keep = it;
+    }
+    keepOf.set(k, keep);
+    for(const it of arr) if(it !== keep && it.id && keep.id && it.id !== keep.id) map.set(it.id, keep.id);
+  }
+  /* 按原顺序重建：每个内容键在**首次出现的位置**放保留下来的那条 */
+  const out = [], seen = new Set();
+  for(const it of src){
+    const k = _stickerKey(it && it.src);
+    if(!k){ out.push(it); continue; }
+    if(seen.has(k)) continue;
+    seen.add(k);
+    out.push(keepOf.get(k));
+  }
+  return { list: out, map };
+}
+/* ⭕ 把聊天（含引用块）里指向「被合并掉那条」的 stickerId 改指到保留下来的那条。
+   两者是同一张图，所以改完聊天里显示的表情**完全不变**，不会有任何一条退化成占位图。 */
+function _remapStickerIds(map){
+  if(!map || !map.size) return 0;
+  let n = 0;
+  const fix = o => {
+    if(!o || typeof o !== "object") return;
+    const id = o.stickerId;
+    if(typeof id === "string" && map.has(id)){ o.stickerId = map.get(id); n++; }
+  };
+  for(const m of (Array.isArray(chats)?chats:[])){ fix(m); if(m && m.quote) fix(m.quote); }
+  for(const p of (Array.isArray(msgs)?msgs:[])){ fix(p); for(const c of ((p && p.comments) || [])) fix(c); }
+  return n;
+}
 /* 留言板：帖子按 id 并集，**同一条帖子的评论也要并集**（两端可能各回了一条） */
 function _mergeMsgs(local, remote){
   const out = _mergeByKey(local, remote, _byId);
@@ -4262,7 +4323,7 @@ window.toggleStickerBatchMode = () => {
 };
 window.stickerSelToggle = (id,v) => { if(v){ if(!stickerSelected.includes(id)) stickerSelected.push(id); } else stickerSelected=stickerSelected.filter(x=>x!==id); updateStickerBatch(); };
 function updateStickerBatch(){ const b=document.getElementById("stickerBatchBar"); if(!b) return; if(stickerSelected.length){ b.classList.add("on"); document.getElementById("stickerBatchCnt").innerText=`已选 ${stickerSelected.length}`; } else b.classList.remove("on"); }
-window.toggleStickerShield = async id => { const s=stickers.find(x=>x.id===id); if(!s) return; s.shielded=!s.shielded; await saveAll(); window.renderStickers(); };
+window.toggleStickerShield = async id => { const s=_findSticker(id); if(!s) return; s.shielded=!s.shielded; await saveAll(); window.renderStickers(); };
 window.delSticker = async id => { stickers=stickers.filter(s=>s.id!==id); stickerSelected=stickerSelected.filter(x=>x!==id); await saveAll(); window.renderStickers(); };
 window.batchShieldStickers = async v => { if(!stickerSelected.length) return; stickers.forEach(s=>{ if(stickerSelected.includes(s.id)) s.shielded=v; }); stickerSelected=[]; await saveAll(); window.renderStickers(); };
 window.batchDeleteStickers = async () => { if(!stickerSelected.length) return; stickers=stickers.filter(s=>!stickerSelected.includes(s.id)); stickerSelected=[]; await saveAll(); window.renderStickers(); };
@@ -4327,7 +4388,15 @@ function onPickSticker(e){
     });
   });
 }
-function resolveStickerSrc(id){ const s=stickers.find(x=>x.id===id); return s ? (s.cachedSrc || s.src) : window.DEFAULTS.PH_SVG; }
+/* ⭕ 按 id 找表情；找不到再查去重留下的别名表（cfg.stickerAlias）—— 指向的还是同一张图。
+   ⛔ 别在各处直接写 stickers.find(x=>x.id===id)：那样会漏掉"被合并掉的那条"，
+      表现为聊天里某个表情突然变成占位图。 */
+function _findSticker(id){
+  let s = stickers.find(x=>x.id===id);
+  if(!s && cfg.stickerAlias && cfg.stickerAlias[id]) s = stickers.find(x=>x.id===cfg.stickerAlias[id]);
+  return s;
+}
+function resolveStickerSrc(id){ const s=_findSticker(id); return s ? (s.cachedSrc || s.src) : window.DEFAULTS.PH_SVG; }
 /* ⭕ v1.15.0：按 imgId 取聊天图片。查不到（同步未带图 / 图被清）→ 返回 PH_SVG 占位图。
    ⛔ 必须返回一个**可用的 src**，不能返回 undefined/空串 —— 否则 <img> 会走 onerror，
    给容器挂上 img-broken，表现成"图裂"而不是"待同步"的中性占位。 */
@@ -4335,7 +4404,7 @@ function resolveChatImg(id){ const d=chatImgs[id]; return d || window.DEFAULTS.P
 
 /* 外部 URL 贴纸首次加载成功后，canvas 转 base64 缩略图缓存，后续不依赖外链 */
 function _cacheStickerThumbnailById(id) {
-  const s = stickers.find(x => x.id === id);
+  const s = _findSticker(id);
   if (!s || s.cachedSrc || s.type !== "url") return;
   const img = new Image();
   img.crossOrigin = "anonymous";
@@ -4388,7 +4457,7 @@ function renderStickerPickerGrid(){
 window.stickerPickerPrevPage=()=>{if(stickerPickerPage>0){stickerPickerPage--;renderStickerPickerGrid();}};
 window.stickerPickerNextPage=()=>{const v=stickers.filter(s=>!s.shielded);const tp=Math.ceil(v.length/STICKER_PICKER_PAGE_SIZE);if(stickerPickerPage<tp-1){stickerPickerPage++;renderStickerPickerGrid();}};
 window.sendSticker = async id => {
-  const s=stickers.find(x=>x.id===id); if(!s) return;
+  const s=_findSticker(id); if(!s) return;
   const now=new Date();
   _addChatMsg({sender:"self", text:"[表情包]", sticker:true, stickerId:id, time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime(),...(pendingQuote?{quote:pendingQuote}:{})});
   window.clearPendingQuote();
@@ -7068,14 +7137,47 @@ window.importSelectedStickers = async () => {
 window.dedupeLib = async (auto) => {
   const c0 = cards.length, s0 = stickers.length;
   cards = _dedupeBy(cards, _cardKey);
-  stickers = _dedupeBy(stickers, s=>_stickerKey(s&&s.src), (a,b)=>_stickerRank(a)-_stickerRank(b));
+  /* ⭕ 表情走带 id 映射的版本：合并掉的那条不能就这么消失，
+     聊天里的 stickerId 要改指到留下来的那条（同一张图）。 */
+  const r = _dedupeStickersWithMap(stickers);
+  stickers = r.list;
+  const remap = _remapStickerIds(r.map);
+  /* ⭕ 映射顺手存进 cfg.stickerAlias：万一将来有新的引用位置没被上面的遍历覆盖到，
+     _findSticker 还能按这张表回溯到同一张图（兜底，见 _findSticker）。 */
+  if(r.map.size) cfg.stickerAlias = Object.assign(cfg.stickerAlias || {}, Object.fromEntries(r.map));
   const dc = c0-cards.length, ds = s0-stickers.length;
   if(dc || ds){
     await saveAll();
-    try{ window.renderCards(); window.renderStickers(); }catch(e){}
-    toast(`${auto?"已自动清理重复内容":"已清理重复"}：字卡 ${dc} 条 · 表情 ${ds} 个`, "ok");
+    try{ window.renderCards(); window.renderStickers(); renderChats(); }catch(e){}
+    toast(`${auto?"已自动清理重复内容":"已清理重复"}：字卡 ${dc} 条 · 表情 ${ds} 个`
+      + (remap ? `（${remap} 条聊天已指向保留的那张）` : ""), "ok");
   } else if(!auto) toast("库里没有重复内容");
-  return {cards:dc, stickers:ds};
+  return {cards:dc, stickers:ds, remapped:remap};
+};
+/* 只统计不动数据 —— 给「清理重复」入口用来先告诉你有多少 */
+window.countDupes = () => {
+  const cnt = (list, keyFn) => {
+    const m = new Map(), n = { dup: 0 };
+    for(const it of (Array.isArray(list)?list:[])){
+      const k = keyFn(it);
+      if(!k) continue;
+      m.set(k, (m.get(k)||0)+1);
+    }
+    for(const v of m.values()) if(v>1) n.dup += v-1;
+    return n.dup;
+  };
+  return { cards: cnt(cards, _cardKey), stickers: cnt(stickers, s=>_stickerKey(s&&s.src)) };
+};
+window.cleanDupes = async () => {
+  const n = window.countDupes();
+  if(!n.cards && !n.stickers){ toast("库里没有重复内容"); return; }
+  const okDo = confirm(
+    `检测到重复内容：字卡 ${n.cards} 条 · 表情 ${n.stickers} 个。\n\n` +
+    `判重标准：字卡 = 分类 + 正文；表情 = 图片路径（raw / jsdelivr 两种域名算同一张）。\n` +
+    `清理后每种只留一条，表情优先保留打得开的那条。\n\n确定清理吗？`
+  );
+  if(!okDo) return;
+  await window.dedupeLib(false);
 };
 
 /* ════════════════════════════════════════════════════════
