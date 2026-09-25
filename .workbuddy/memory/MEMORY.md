@@ -29,12 +29,17 @@
 - **只在 `.workbuddy/memory/` 维护**（`YYYY-MM-DD.md` 日记 + `MEMORY.md` 长期笔记）。
   `.codebuddy/memory/` 是旧工具名留下的冗余副本，内容已于 2026-09-21 全部并入 `.workbuddy/`，
   **不要再往那边写、也不要从那边读**
-- ⚠ **分叉会复发（2026-09-25 又发生一次）**：另一个会话（CodeBuddy 工具名）不知道这个约定，
-  把 v1.15.2 的记录写进了 `.codebuddy/memory/`。**每次接手前先比对两边**，把新增内容并过来：
+- ⚠ **两目录并存 = 总经理 2026-09-25 拍板选 B**（另一选项 A 是从 git 移除 `.codebuddy/`）。
+  即：`.workbuddy/memory/` 是**主线**（我维护，最全）；`.codebuddy/memory/` 由另一个会话
+  （CodeBuddy 工具名）写，**不删不碰**，两边都进 git。
+- ⛔ **所以每次接手前必须先比对**，把那边独有的内容并进主线。用现成脚本：
   ```
-  比对手法：Node 读两个 MEMORY.md，按行做 Set 差集，看"只在 A 里"的行
+  node .workbuddy/memory/_compare.js
   ```
-  合并方向：`.workbuddy/` 是主线（更全），`.codebuddy/` 可能有**主线缺的新增节** → 按节并入
+  它比的是**技术关键词**（反引号标识符/函数名/文件名），不是逐行 ——
+  因为两边对同一件事的措辞往往不同，逐行比对会刷屏全是假警报。
+  输出"那边独有的关键词/节标题"→ **逐个判断**：真新信息就按节并入主线（保留原文），
+  只是措辞或旧版残留就忽略。判完重跑一次，应显示 ✅。
 - `.gitignore` 只放行 `.workbuddy/memory/`；`.workbuddy/` 下其余（skills / 缓存 / 配置）不进仓库
   （本仓库 public）。原有关键规则：`github-pat-token.txt` / `*.code-workspace` / `ZY/` / `word-min.json`
 - ⛔ **改已跟踪的文件前先 `git show HEAD:<file>` 看一眼**，别用 Write 盲写 ——
@@ -44,8 +49,10 @@
   规则：MINOR=功能，PATCH=修 bug；**数据结构变更必须写 migrate 函数并在 CHANGELOG 说明**
 
 ## 🌐 网络环境（实测）
-- ⛔ **`raw.githubusercontent.com` 在本机不可达**；**`cdn.jsdelivr.net` 可用**
-- ⛔ jsDelivr 对超限文件（>20MB）一律 403，加 Range 也没用（四个镜像 + statically.io 全一样）
+- ⛔ **`raw.githubusercontent.com` 在本机不可达**（node fetch 直接 failed，web_fetch 也 500）；
+  **`cdn.jsdelivr.net` 可用**（HTTP 200）
+- ⛔ jsDelivr 对超限文件（>20MB）一律 403，加 Range 也没用（四个镜像
+  cdn/fastly/gcore/testingcf + statically.io 全一样；**Range 本身是支持的**，未超限文件能 206）
   → **分段拉取不可行**。三个云端默认 URL 已全部改为 jsDelivr
   （`cloudCardIndexUrl` / `cloudMusicIndexUrl` / `cloudStickerIndexUrl`）；
   `_jsdelivr(url, fallback)` 会把老 cfg 里的 raw 地址自动转换。**新建云端资源一律用 jsDelivr**
@@ -133,6 +140,8 @@
   （本机私有，外传 = sha 错乱与 409 的源头）
 - ⚠ 多设备测试前**关掉「自动推送」**，否则测试数据持续污染云端
 - ⛔ 令牌存 localStorage，**绝不写进代码**
+  ⚠ 用户在对话里贴过 token → 完工后应提醒他 **revoke 重发**
+- 启动检测（`checkCloudBackup`）：云端有更新只 **confirm 询问**，**绝不自动覆盖本机**
 
 ## ⭕ 云同步合并：id 判重不够，必须叠内容键（v1.15.2 教训）
 - 云端导入的 id = `"c"/"sk" + Date.now()`，**跨设备必然不同** → `_mergeById` 会把两台设备
@@ -158,11 +167,17 @@
 - 云端字卡库 `word.json`（1521 条）风格是**日常对话/怼人**，**不适合做组字语料**
 - **云端组字词典 `cloudDict`** 源 = `fcylz/chinese-xinhua`（分支 **master**）：
   `data/idiom.json`（30895 条成语）可拉；⭕ `ci.json` / 原 `word.json` 都 403（超 20MB）
+- ⛔ **成语不能直接当组字语料**：填空=堆砌、建链=切碎成半截。
+  ✅ 正确用法 = 筛**写景成语 638 条**（≥2 意象字、无贬义字、字频 top1500 内）→ `frags` 当意象片段；
+  **非写景成语不建链**（实测灌 6000 条更糟）
 - 汉字表 `word-min.json`（349KB）**对组字零增益**，价值在拼音/笔画/部首，留给将来玩法
+  ✅ 已上传到 `fcylz/chinese-xinhua@master/data/word-min.json`（CDN 200 即时生效）；
+  本仓库不需要本地副本（已 gitignore）
 - ⛔ **扩大起字池 ≠ 往池里加字**：多样性瓶颈是**链覆盖**，不是池子大小。
   正解 = 歇后语 `xiehouyu.json` **只建链 + 扩池**（链 661→2484，首字去重 102→143）
 - ⭕ **判断汉字生僻度别用笔画数、别用 ci.json 词频**（ci 是古汉语，词频全是古字）。
-  ✅ 唯一可靠判据 = **成语字频排名**（成语是现代汉语活语料）
+  ✅ 唯一可靠判据 = **成语字频排名**（成语是现代汉语活语料）。
+  **现用 top3000**（干净）；全量 4850 会混进 祚/筲/洩/夤/缊/赭/鼗
 - 组字与抽卡是**概率共存**：`recombProb`（默认 15%）命中才造句，失败自动退回抽卡
 - **上传文件到 `fcylz/chinese-xinhua`**：`git clone --filter=blob:none`
   + `git sparse-checkout set data` → 加文件 → commit → push（HTTP/CDN 只能读，写必须走 git）
@@ -172,5 +187,6 @@
   `frags`(2-4字→模板`{w}`填空) · `segs`(4-10字→长句拼段) · `chars`(起字池) · `bi/tri`(字级链)
 - ⚠ `_getMarkov()` 的缓存签名**不含外部语料** —— 加字典时必须把字典规模并进 sig，
   否则字典变了索引不重建
+  sig 现有构成 = `cards.length | totalChars | shieldedCats | shieldedCount`
 - ⛔ 组字门槛必须在 **`genRecomb` 和 `_markovSentence` 两处**都算上词典 ——
   只改一处会让字卡为空时 Markov 静默失效、生成全退化成模板句（表现：词藻堆砌）
