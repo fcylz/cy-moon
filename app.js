@@ -7,6 +7,22 @@ window.DEFAULTS = {
     delayMin:2, delayMax:5, typingText:"", ignoreOn:false, quoteOn:true,
     sentenceJoin:true, activeSend:false, activeMin:5, activeMax:20, nextActiveAt:0,
     replyProb:60, // 用户发消息后彼自动回复的概率（0-100），默认60%
+    /* ❤ 语音通话（纯模拟：状态机 + 定时器，不走 WebRTC、不联网）
+       voiceCallOn        总开关 —— 关掉后输入框的电话按钮和她的随机来电一起停
+       voiceCallIncoming  她会不会主动打过来
+       voiceCallRing      来电时响铃 + 振动
+       voiceMissRate      我拨出去时"她没接"的概率（%）——留点遗憾才像真的
+       voiceInMin/Max     她两次来电的间隔范围（分钟）
+       voiceInNextAt      ⭕ 下一次来电的时间点，**落盘**：手机后台会冻结 JS，
+                          回到前台按这个时间点补发，而不是重新抽签（同 scheduleActive） */
+    voiceCallOn:true, voiceCallIncoming:true, voiceCallRing:true,
+    voiceMissRate:35, voiceInMin:30, voiceInMax:90, voiceInNextAt:0,
+    /* ❤ 来电概率（%）—— 与 replyProb **同一套语义**：每次到点判定一次，命中才真来电。
+       默认 0.5%：平均 30~90 分钟抽一次 × 0.5% ≈ 好几天才遇上一次，稀罕但真会发生。
+       ⛔ 别把它和 voiceMissRate 搞混：那个是"我拨出去她不接"的概率。 */
+    voiceInProb:0.5,
+    /* ❤ 小窗的位置 / 尺寸 / 胶囊位置（相对 #vp 的像素，null = 用默认值） */
+    vcWinPos:null, vcWinSize:null, vcPillPos:null,
     popupOn:true, notifOn:false, soundOn:true, sfxVolume:0.8, showAvatar:true, showName:true,
     showTime:true, showRead:true, showSelfRead:false, showSelfName:false,readText:"",
     customFont:"", customFontCss:"", customBubble:"", customChatCss:"",
@@ -117,15 +133,50 @@ const DB_NAME="SilentChamberDB", DB_VER=11;
 let DB=null, tempTimelineImg="";
 const SEP_POOL=["，","。","！","…","？","～"];
 const STICKER_CHANCE=15; // 对方随机发送表情包的概率（%），不开放给用户调节
+/* ⭕ 回复配比（单位 %）。
+   fireReply 是**顺序判定、互斥**：前面的命中就 return，所以这里的数字是
+   "轮到该分支时被命中的概率"，不是最终占比（会被前面的分支吃掉一部分）。
+   顺序：表情包 → 画作 → 歌曲 → 歌词 → 组字(cfg.recombProb) → 抽卡兜底。
+   想调"她到底发什么"，改这一组数字就够了。 */
+const REPLY_P_PAINTER=1;   // 画作（原 3%~10%，调低）
+const REPLY_P_SONG=2;      // 推荐歌曲
+const REPLY_P_LYRIC=3;     // 歌词（原 6%，调低）
 
 /* ─── 版本记录 ───
    规则：MAJOR.MINOR.PATCH —— 改功能走 MINOR，只修 bug 走 PATCH。
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.15.4";
-const APP_BUILD   = "2026-09-25";
+const APP_VERSION = "1.18.0";
+const APP_BUILD   = "2026-10-03";
 const APP_CHANGELOG = [
+  { v:"1.18.0", d:"2026-10-03", items:[
+    "通话小窗 / 来电弹窗 / 最小化胶囊**统一改成半透明毛玻璃**：透得出下面的内容，白字仍读得清",
+    "玻璃层：底色 rgba(14,19,30,.5) + blur(26px) saturate(170%) + 亮边 + 顶部高光；来电遮罩降到 .55 并加大模糊",
+    "去掉沉浸模式（顶栏那只眼睛）—— 毛玻璃已经够好看，不需要额外的隐藏态",
+  ]},
+  { v:"1.17.0", d:"2026-10-03", items:[
+    "通话页从全屏改成**可拖动小窗**：顶栏拖动、右下角缩放、可最小化成胶囊、可沉浸（只留背景光晕，点窗口退出）",
+    "默认 262×400 出现在右上角；顶栏的尺寸按钮在 小 / 标准 / 大 三档间循环；位置和尺寸都会记住",
+    "最小化后通话**继续走**：胶囊上显示名字和计时，点它把小窗叫回来，右侧红钮直接挂断",
+    "来电概率改为可配置 `voiceInProb`，默认 **0.5%**（设置 → 聊天 → 行为 → 来电概率）",
+    "⛔ 0.5% 是「每 30~90 分钟抽一次时的命中率」，不是「她每次回复时的命中率」；想更频繁就把滑块往上调",
+  ]},
+  { v:"1.16.0", d:"2026-10-03", items:[
+    "新增：**语音通话**（参考 cy-star 的视频通话）—— 输入框的电话按钮拨出，她也会主动打过来",
+    "呼叫中会先「正在等待接听」，1.5~3s 接通；她也可能不接（概率可调，默认 35%），随机给「正在忙 / 拒绝了 / 未接听」几种文案",
+    "她会**主动来电**：每 30~90 分钟抽一次，50% 真的打过来；来电有全屏遮罩 + 响铃振动，可接听 / 拒绝，超时或 30% 概率变成「未接听」",
+    "通话结束会在聊天里留一条**通话记录**（时长 mm:ss），点它可以直接回拨",
+    "设置 → 聊天 → 行为：语音通话 / 她会主动来电 / 来电铃声·振动 三个开关，以及「她不接的概率」滑块",
+    "⛔ 通话是**纯模拟**的状态机 + 定时器，不走 WebRTC、不申请麦克风权限、不联网；静音/免提只是视觉反馈",
+    "⛔ 通话不足 2 秒不写进聊天（避免误触刷屏）；关页面时若正在通话会补记一条",
+  ]},
+  { v:"1.15.5", d:"2026-10-03", items:[
+    "调整回复配比：**画作 1%**（原 3%~10%）、**歌曲 2%**（不变）、**歌词 3%**（原 6%），文字类回复占比提升",
+    "⭕ 表情包 15%、组字 `recombProb` 15% 未动；顺序判定不变：表情包 → 画作 → 歌曲 → 歌词 → 组字 → 抽卡兜底",
+    "各分支概率抽成集中常量 `REPLY_P_PAINTER` / `REPLY_P_SONG` / `REPLY_P_LYRIC`（在 `STICKER_CHANCE` 旁边），以后调比例只改这一处",
+    "⛔ 注意这些是「轮到该分支时被命中的概率」，不是最终占比 —— 前面的分支会先吃掉一部分",
+  ]},
   { v:"1.15.4", d:"2026-09-25", items:[
     "新增：**已存在的重复内容**怎么清 —— 设置 → 数据 → 存储管理 → 清理重复内容",
     "点它会先告诉你检测到多少条、判重标准是什么（字卡 = 分类+正文，表情 = 图片路径，raw/jsdelivr 算同一张），确认后才动数据",
@@ -340,6 +391,7 @@ async function _migrateSqueezeImages(){
 /** 消息类型识别：决定引用预览怎么渲染 */
 function _msgKind(m){
   if(!m) return "text";
+  if(m.call) return "call";   /* ❤ 语音通话记录 */
   if(m.sticker) return "sticker";
   if(m.painter) return "painter";
   if(m.song)    return "song";
@@ -347,7 +399,7 @@ function _msgKind(m){
   if(m.lyric)   return "lyric";
   return "text";
 }
-const QUOTE_LABEL={ text:"", image:"[图片]", sticker:"[表情包]", painter:"[画作]", song:"[歌曲]", lyric:"[歌词]" };
+const QUOTE_LABEL={ text:"", image:"[图片]", sticker:"[表情包]", painter:"[画作]", song:"[歌曲]", lyric:"[歌词]", call:"[语音通话]" };
 /** 兼容旧数据：老的 quote 是纯字符串 */
 function getQuoteInfo(q){
   if(!q) return null;
@@ -608,6 +660,8 @@ async function init() {
   fitHomeToScreen(); fitHomeWatch(); /* ⭕ 首页贴合屏幕：不滚动 */
   renderSoundList();
   scheduleActive(true);
+  /* ❤ 语音通话：resume=true —— 后台被冻结期间错过的来电，回到前台补一次 */
+  try{ vcInitDrag(); scheduleVoiceIncoming(true); }catch(e){}
   initAnniCard();
   initOppTime();
 
@@ -905,6 +959,10 @@ function syncUI() {
   if(wTitle) wTitle.innerText=cfg.welcomeTitle||"";
   if(wText)  wText.innerText=cfg.welcomeText||"";
   setSw("sw_ignoreOn",    cfg.ignoreOn);
+  /* ❤ 语音通话 */
+  setSw("sw_voiceCallOn",       cfg.voiceCallOn);
+  setSw("sw_voiceCallIncoming", cfg.voiceCallIncoming);
+  setSw("sw_voiceCallRing",     cfg.voiceCallRing);
 setSw("sw_quoteOn",     cfg.quoteOn);
 setSw("sw_sentenceJoin",cfg.sentenceJoin);
 setSw("sw_activeSend",  cfg.activeSend);
@@ -979,6 +1037,16 @@ fitHomeToScreen();
   if (tpEl) tpEl.value = (typeof cfg.transProb==="number"?cfg.transProb:50);
   const tpVal = document.getElementById("transProbVal");
   if (tpVal) tpVal.innerText = (typeof cfg.transProb==="number"?cfg.transProb:50) + "%";
+  /* ❤ 语音通话：她不接的概率 */
+  const vmEl = document.getElementById("voiceMissRate");
+  if (vmEl) vmEl.value = (typeof cfg.voiceMissRate==="number"?cfg.voiceMissRate:35);
+  const vmVal = document.getElementById("voiceMissRateVal");
+  if (vmVal) vmVal.innerText = (typeof cfg.voiceMissRate==="number"?cfg.voiceMissRate:35) + "%";
+  /* ❤ 来电概率（允许小数，所以显示时保留一位以内，别硬加 .0） */
+  const vpEl = document.getElementById("voiceInProb");
+  if (vpEl) vpEl.value = (typeof cfg.voiceInProb==="number"?cfg.voiceInProb:0.5);
+  const vpVal = document.getElementById("voiceInProbVal");
+  if (vpVal) vpVal.innerText = (typeof cfg.voiceInProb==="number"?cfg.voiceInProb:0.5) + "%";
   setSw("sw_tradPrimary", cfg.tradPrimary!==false);
   const muEl = document.getElementById("cfg_musicUrl");
   if(muEl) muEl.value = cfg.musicUrl || "";
@@ -1113,6 +1181,11 @@ window.cfgToggle = (k, ev)=>{
   if(SYNC_SW_NO_UI.indexOf(k) < 0) syncUI();
   saveAllDebounced();
   if(k==="activeSend") scheduleActive();
+  /* ❤ 语音通话：关掉总开关时若正在通话，立即挂断；改来电开关则重排下一次来电 */
+  if(k==="voiceCallOn"||k==="voiceCallIncoming"){
+    if(k==="voiceCallOn"&&!cfg.voiceCallOn&&VC.state!=="idle") window.endVoiceCall();
+    scheduleVoiceIncoming(false);
+  }
   /* ⭕ 云同步开关：只在面板上即时刷新那行状态文字，不碰别处 */
   if(SYNC_SW_NO_UI.indexOf(k) >= 0){
     const st=document.getElementById("syncStatus");
@@ -1790,7 +1863,15 @@ function _buildMsgRow(m, idx, ctx){
   const mainText = tradPrimary ? m.translation : m.text;
   const subText  = tradPrimary ? m.text : m.translation;
   const transClass=openTrans.has(idx)?"show":"";
-  const bodyHtml = m.sticker
+  /* ❤ 通话记录气泡：短按 = 再拨一次（真实聊天软件也是点通话记录回拨） */
+  const bodyHtml = m.call
+    ? `<div class="bubble call-bubble ${isSelf?"message-sent":"message-received"}" data-idx="${idx}" onclick="startVoiceCall()">
+         <svg class="cb-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6.6 10.8c1.4 2.8 3.7 5.1 6.5 6.5l2.2-2.2c.28-.27.68-.36 1.03-.24 1.1.37 2.3.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C10.56 21 3 13.44 3 4c0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.28.2 2.5.57 3.57.11.35.03.74-.24 1.02L6.6 10.8z"/></svg>
+         <span class="cb-txt">${escapeHtml(m.text||"语音通话")}</span>
+         ${m.callDur?`<span class="cb-dur">${fmtCallDur(m.callDur)}</span>`:""}
+         <span class="cb-again">回拨</span>
+       </div>`
+    : m.sticker
     ? `<img class="sticker-msg clickable-media" data-idx="${idx}" src="${resolveStickerSrc(m.stickerId)}" loading="lazy" onclick="window._openImageModal(this.src)" onerror="this.src='${window.DEFAULTS.PH_SVG}'">`
     /* ⭕ 图片消息：用户上传 / bot 随机发的独立图片消息类型。
        v1.15.0 起图存 chatImgs、消息只留 imgId；老数据仍可能是内嵌的 m.image —— 两种都认。
@@ -2407,6 +2488,8 @@ function bindChatDelegation(){
     if (ql && (ql.dataset.mid || ql.dataset.jump)) { e.stopPropagation(); jumpToMsg(ql.dataset.mid, ql.dataset.jump); return; }
     // 气泡短按 → 翻译切换（排除 sticker）
     if (e.target.closest(".sticker-msg")) return;
+    /* ❤ 通话记录气泡自带 onclick（回拨），别再走切换译文那条分支 */
+    if (e.target.closest(".call-bubble")) return;
     const bubble = e.target.closest(".bubble");
     if (bubble && bubble.dataset.idx !== undefined) {
       toggleTrans(+bubble.dataset.idx);
@@ -3798,24 +3881,21 @@ async function fireReply(){
       return;
     }
   }
-  /* ⭕ painter画作分支：3%~10% 概率，优先级在表情包之后、字卡之前 */
-  if(cfg.painterOn){
-    const randVal = Math.random();
-    if(randVal >= 0.03 && randVal <= 0.10){
-      const painterSeed = Math.floor(Math.random() * 9999999).toString();
-      let nameP=texts.opp_name||"温语", avatarP=imgs.oppAvatar||"", memberIdP="";
-      if(cfg.groupMode&&groupMembers.length){ const mp=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameP=mp.name; avatarP=mp.avatar||window.DEFAULTS.PH_SVG; memberIdP=mp.id; }
-      _addChatMsg({sender:"opp",text:"[画作]",painter:true,painterSeed,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameP,memberId:memberIdP});
-      saveAllDebounced();
-      if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
-      else { if(cfg.popupOn) showPopup("[画作]",nameP,avatarP); }
-      notify("[画作]",nameP,avatarP);
-      return;
-    }
+  /* ⭕ painter画作分支：概率 REPLY_P_PAINTER，优先级在表情包之后、字卡之前 */
+  if(cfg.painterOn && Math.random()*100 < REPLY_P_PAINTER){
+    const painterSeed = Math.floor(Math.random() * 9999999).toString();
+    let nameP=texts.opp_name||"温语", avatarP=imgs.oppAvatar||"", memberIdP="";
+    if(cfg.groupMode&&groupMembers.length){ const mp=groupMembers[Math.floor(Math.random()*groupMembers.length)]; nameP=mp.name; avatarP=mp.avatar||window.DEFAULTS.PH_SVG; memberIdP=mp.id; }
+    _addChatMsg({sender:"opp",text:"[画作]",painter:true,painterSeed,time:fmtTime(now),timeWithSec:fmtTime(now,true),date:fmtDate(now),ts:now.getTime(),name:nameP,memberId:memberIdP});
+    saveAllDebounced();
+    if(currentApp==="chatApp"){ const f=document.getElementById("chatFlow"); const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; appendNewChats(); }
+    else { if(cfg.popupOn) showPopup("[画作]",nameP,avatarP); }
+    notify("[画作]",nameP,avatarP);
+    return;
   }
-  /* ⭕ 推荐歌曲分支：位于表情包/画作之后，占剩余份额的 2%。
+  /* ⭕ 推荐歌曲分支：概率 REPLY_P_SONG，位于表情包/画作之后。
      与是否正在播放无关 —— 只要曲库可用（init 后 3s 已后台预取）即可触发 */
-  if(cfg.songRecOn && Math.random()<0.02){
+  if(cfg.songRecOn && Math.random()*100 < REPLY_P_SONG){
     const sPool=await _getSongPool();
     if(sPool && sPool.length){
       const sg=sPool[Math.floor(Math.random()*sPool.length)];
@@ -3837,8 +3917,8 @@ async function fireReply(){
   const lyrics=pool.filter(c=>c.cat==="歌词库");
   const norm=pool.filter(c=>c.cat!=="歌词库");
   let isLyric=false, text="", trans="", fragments=[], recombined=false;
-  /* 歌词 6%：lyricFromCloud 开启时按「当前播放 > 曲库随机」取，都取不到才回退本地歌词库 */
-  if(Math.random()<0.06){
+  /* 歌词 REPLY_P_LYRIC：lyricFromCloud 开启时按「当前播放 > 曲库随机」取，都取不到才回退本地歌词库 */
+  if(Math.random()*100<REPLY_P_LYRIC){
     const picked = cfg.lyricFromCloud ? await pickCloudLyric() : null;
     if(picked){ isLyric=true; text=picked.text; trans=""; }
     else {
@@ -3896,6 +3976,367 @@ async function fireReply(){
   notify(text,name,avatar);
   if(cfg.autoTTS && text) playMiniMaxTTS(text);
 }
+
+/* ════════════════════════════════════════════
+   ❤ 语音通话（Voice Call）
+   参考 cy-star 的视频通话：同样只是「状态机 + 定时器」的模拟 ——
+   ⛔ 没有 WebRTC、不申请麦克风权限、不联网，全部是本地演出。
+
+   状态机：
+     idle ─拨出→ calling ─接通→ live ─挂断→ idle
+     idle ─她打来→ incoming ─接听→ calling → live
+                            └拒绝/超时→ idle
+
+   ⛔ 六个定时器各管一段，别混用（混了就会出现"挂断了还在响铃"）：
+     connTimer  呼叫中 → 接通
+     missTimer  呼叫中 → 她没接（自动挂断）
+     incTimer   来电遮罩 → 超时未接听
+     tickTimer  通话中计时
+     inTimer    下一次随机来电
+     ringTimer  来电响铃循环
+   ════════════════════════════════════════════ */
+const VC_MIN_LOG=2000;   /* 通话短于 2s 不写进聊天 —— 误触拨错不该刷屏 */
+const VC = {
+  state:"idle",     // idle | calling | live | incoming
+  from:"self",      // 谁发起：self=我拨出，opp=她打来
+  startAt:0, dur:0, muted:false, speaker:false,
+  tickTimer:null, connTimer:null, missTimer:null,
+  incTimer:null, inTimer:null, ringTimer:null,
+};
+function fmtCallDur(ms){
+  const s=Math.max(0,Math.floor((ms||0)/1000)), m=Math.floor(s/60), h=Math.floor(m/60);
+  return h>0 ? `${h}:${String(m%60).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`
+             : `${String(m).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+}
+const _vcName = ()=>texts.opp_name||"彼";
+const _vcSelf = ()=>texts.l1_name||texts.l2_name||"我";
+
+/* 头像由 syncUI 的 [data-img] 自动填，这里只补名字 */
+function _vcFillNames(){
+  const n1=document.getElementById("vcName");    if(n1) n1.textContent=_vcName();
+  const n2=document.getElementById("vcIncName"); if(n2) n2.textContent=_vcName();
+}
+function _vcRingStart(){
+  if(!cfg.voiceCallRing) return;
+  _vcRingStop();
+  const ping=()=>{
+    if(VC.state!=="incoming"){ _vcRingStop(); return; }
+    if(cfg.soundOn) playSoundById(cfg.activeSoundId||"__builtin_thud1__");
+    if(navigator.vibrate) navigator.vibrate([400,300,400]);
+  };
+  ping();
+  VC.ringTimer=setInterval(ping,2600);
+}
+function _vcRingStop(){ if(VC.ringTimer){ clearInterval(VC.ringTimer); VC.ringTimer=null; } }
+
+/* ⭕ 所有"结束"都走这一处：清定时器 + 关两层 UI + 回 idle */
+function _vcReset(){
+  clearInterval(VC.tickTimer); VC.tickTimer=null;
+  clearTimeout(VC.connTimer); clearTimeout(VC.missTimer); clearTimeout(VC.incTimer);
+  _vcRingStop();
+  const sc=document.getElementById("vcScreen");  if(sc){ sc.classList.remove("on"); sc.classList.remove("live"); }
+  const ov=document.getElementById("vcIncoming"); if(ov) ov.classList.remove("on");
+  const pl=document.getElementById("vcPill");     if(pl) pl.classList.remove("on");
+  VC.state="idle"; VC.startAt=0; VC.dur=0;
+}
+/* 写一条通话记录进聊天。sender 记的是"动作方"：我拨的算 self，她打来的算 opp */
+function _vcWriteMsg(sender, text, dur){
+  const now=new Date();
+  _addChatMsg({sender, text, call:true, voice:true, callDur:dur||0,
+    time:fmtTime(now), timeWithSec:fmtTime(now,true), date:fmtDate(now), ts:now.getTime(),
+    name: sender==="self" ? _vcSelf() : _vcName()});
+  saveAllDebounced();
+  if(currentApp==="chatApp"){
+    const f=document.getElementById("chatFlow");
+    if(f){ const near=f.scrollHeight-f.scrollTop-f.clientHeight<80; if(!near) unreadCount++; }
+    appendNewChats();
+  }
+}
+function _vcConnected(){
+  VC.state="live"; VC.startAt=Date.now(); VC.dur=0;
+  const sc=document.getElementById("vcScreen"); if(sc) sc.classList.add("live");
+  const st=document.getElementById("vcStatus"); if(st) st.textContent="通话中";
+  _vcSyncCallBtns();
+  clearInterval(VC.tickTimer);
+  VC.tickTimer=setInterval(()=>{
+    VC.dur=Date.now()-VC.startAt;
+    const t=fmtCallDur(VC.dur);
+    const el=document.getElementById("vcTimer");     if(el) el.textContent=t;
+    const pl=document.getElementById("vcPillTimer"); if(pl) pl.textContent=t;  /* 最小化时也要走 */
+  },500);
+  if(cfg.soundOn) playSoundById(cfg.activeSoundId||"__builtin_thud1__");
+  toast("已接通");
+}
+function _vcOpenScreen(statusText){
+  _vcFillNames();
+  _vcSyncCallBtns();   /* ⭕ 每开一次新通话，静音/免提都要复位 */
+  const sc=document.getElementById("vcScreen");
+  if(sc){ vcApplyWin(); sc.classList.add("on"); }
+  const pill=document.getElementById("vcPill"); if(pill) pill.classList.remove("on");
+  const st=document.getElementById("vcStatus"); if(st) st.textContent=statusText;
+  const t =document.getElementById("vcTimer");  if(t)  t.textContent="00:00";
+  const pt=document.getElementById("vcPillTimer"); if(pt) pt.textContent="00:00";
+  const pn=document.getElementById("vcPillName");  if(pn) pn.textContent=_vcName();
+}
+/* ── 我拨出去 ── */
+window.startVoiceCall = ()=>{
+  if(!cfg.voiceCallOn){ toast("语音通话已关闭","warn"); return; }
+  if(VC.state!=="idle"){ toast("正在通话中"); return; }
+  VC.state="calling"; VC.from="self"; VC.dur=0; VC.muted=false; VC.speaker=false;
+  _vcOpenScreen("正在等待对方接听…");
+  if(cfg.soundOn) playSoundById(cfg.activeSoundId||"__builtin_thud1__");
+  if(navigator.vibrate) navigator.vibrate(18);
+  const miss=(typeof cfg.voiceMissRate==="number")?cfg.voiceMissRate:35;
+  if(Math.random()*100<miss){
+    /* ⭕ 她没接：4~10s 后自动挂断。
+       文案随机几种 —— 每次都是同一句「未接听」，很快就假了 */
+    VC.missTimer=setTimeout(()=>{
+      if(VC.state!=="calling") return;
+      const labels=[`${_vcName()} 未接听`, `${_vcName()} 正在忙，无法接听`,
+                    `${_vcName()} 拒绝了通话`, `${_vcName()} 暂时无法接听`];
+      const lbl=labels[Math.floor(Math.random()*labels.length)];
+      _vcReset();
+      _vcWriteMsg("self", lbl, 0);
+      toast(lbl);
+    }, 4000+Math.random()*6000);
+  } else {
+    VC.connTimer=setTimeout(()=>{ if(VC.state==="calling") _vcConnected(); }, 1500+Math.random()*1500);
+  }
+};
+/* ── 挂断（手动 / 关总开关 / 退出页面，都走这里）── */
+window.endVoiceCall = ()=>{
+  if(VC.state==="idle") return;
+  const dur=VC.dur, st=VC.state, from=VC.from;
+  _vcReset();
+  if(st==="live"){
+    if(dur>=VC_MIN_LOG){ _vcWriteMsg(from==="self"?"self":"opp","语音通话已结束",dur); toast(`通话结束 · ${fmtCallDur(dur)}`); }
+    else toast("通话已结束");   /* ⛔ 太短不记进聊天 */
+  } else if(st==="calling"&&from==="self"){
+    _vcWriteMsg("self","已取消通话",0); toast("已取消通话");
+  }
+};
+/* ── 她打过来 ── */
+function showIncomingVoiceCall(){
+  if(!cfg.voiceCallOn||VC.state!=="idle") return;
+  VC.state="incoming"; VC.from="opp"; VC.dur=0;
+  _vcFillNames();
+  const ov=document.getElementById("vcIncoming");
+  if(!ov){ VC.state="idle"; return; }
+  ov.classList.add("on");
+  _vcRingStart();
+  clearTimeout(VC.incTimer);
+  /* ⭕ 30% 概率"你没接到"：她打来你却总是秒接，反而不像真的 */
+  const autoMiss=Math.random()<0.3;
+  VC.incTimer=setTimeout(()=>{
+    if(VC.state!=="incoming") return;
+    _vcReset();
+    _vcWriteMsg("opp", `未接听 ${_vcName()} 的来电`, 0);
+    toast(`错过了 ${_vcName()} 的来电`);
+  }, autoMiss ? (6000+Math.random()*6000) : 22000);
+}
+window.answerVoiceCall = ()=>{
+  if(VC.state!=="incoming") return;
+  clearTimeout(VC.incTimer); _vcRingStop();
+  const ov=document.getElementById("vcIncoming"); if(ov) ov.classList.remove("on");
+  VC.state="calling"; VC.from="opp";
+  _vcOpenScreen("正在接通…");
+  VC.connTimer=setTimeout(()=>{ if(VC.state==="calling") _vcConnected(); }, 900);
+};
+window.declineVoiceCall = ()=>{
+  if(VC.state!=="incoming") return;
+  clearTimeout(VC.incTimer); _vcRingStop();
+  const ov=document.getElementById("vcIncoming"); if(ov) ov.classList.remove("on");
+  VC.state="idle";
+  _vcWriteMsg("opp","已拒绝通话",0);
+  toast("已拒绝");
+};
+/* ⭕ 静音 / 免提：没有真实音频流，但点了必须有反馈，否则会被当成坏了 */
+function _vcSyncCallBtns(){
+  const m=document.getElementById("vcMuteBtn");    if(m) m.classList.toggle("active",!!VC.muted);
+  const s=document.getElementById("vcSpeakerBtn"); if(s) s.classList.toggle("active",!!VC.speaker);
+}
+window.toggleVoiceMute    = ()=>{ VC.muted=!VC.muted;     _vcSyncCallBtns(); toast(VC.muted?"已静音":"已取消静音"); };
+window.toggleVoiceSpeaker = ()=>{ VC.speaker=!VC.speaker; _vcSyncCallBtns(); toast(VC.speaker?"已开启免提":"已关闭免提"); };
+/* ════════════════════════════════════════════
+   ❤ 通话小窗：拖动 / 缩放 / 最小化
+   ⛔ 坐标一律**相对 #vp**（小窗是 absolute，父级是手机框），
+      不是相对窗口 —— 电脑端 viewport 居中时二者差着几百像素。
+   ════════════════════════════════════════════ */
+const VC_SIZES=[{w:210,h:320},{w:262,h:400},{w:322,h:486}];
+const VC_SIZE_LABEL=["小","标准","大"];
+function _vcBounds(){
+  const vp=document.getElementById("vp")||document.querySelector(".viewport");
+  if(vp) return vp.getBoundingClientRect();
+  return {left:0,top:0,width:window.innerWidth,height:window.innerHeight};
+}
+function _vcClampPos(x,y,w,h){
+  const b=_vcBounds();
+  return { x:Math.max(4,Math.min(x,b.width -w-4)), y:Math.max(4,Math.min(y,b.height-h-4)) };
+}
+function _vcSize(){
+  const s=cfg.vcWinSize;
+  if(s&&s.w&&s.h) return s;
+  return {w:VC_SIZES[1].w,h:VC_SIZES[1].h};   /* 默认标准档 */
+}
+function vcApplyWin(){
+  const sc=document.getElementById("vcScreen"); if(!sc) return;
+  const b=_vcBounds(), s=_vcSize();
+  const pos=cfg.vcWinPos||{x:b.width-s.w-14,y:70};
+  const p=_vcClampPos(pos.x,pos.y,s.w,s.h);
+  sc.style.width=s.w+"px"; sc.style.height=s.h+"px";
+  sc.style.left=p.x+"px";  sc.style.top=p.y+"px";
+  sc.style.right="auto";    sc.style.bottom="auto";
+}
+function vcApplyPill(){
+  const pill=document.getElementById("vcPill"); if(!pill) return;
+  const b=_vcBounds(), w=pill.offsetWidth||180, h=pill.offsetHeight||46;
+  const pos=cfg.vcPillPos||{x:b.width-w-14,y:b.height-h-84};   /* 默认落在 dock 上方 */
+  const p=_vcClampPos(pos.x,pos.y,w,h);
+  pill.style.left=p.x+"px"; pill.style.top=p.y+"px";
+  pill.style.right="auto";  pill.style.bottom="auto";
+}
+/* 最小化：小窗收成胶囊，通话继续（计时照走） */
+window.vcMinimize = ()=>{
+  if(VC.state==="idle") return;
+  const sc=document.getElementById("vcScreen"); if(sc) sc.classList.remove("on");
+  const pill=document.getElementById("vcPill");  if(!pill) return;
+  const pn=document.getElementById("vcPillName"); if(pn) pn.textContent=_vcName();
+  pill.classList.add("on");
+  vcApplyPill();
+};
+window.vcRestore = ()=>{
+  const pill=document.getElementById("vcPill"); if(pill) pill.classList.remove("on");
+  const sc=document.getElementById("vcScreen");
+  if(sc){ vcApplyWin(); sc.classList.add("on"); }
+};
+/* 尺寸按钮：小 → 标准 → 大 → 小 */
+window.vcCycleSize = ()=>{
+  const cur=_vcSize();
+  let i=VC_SIZES.findIndex(s=>Math.abs(s.w-cur.w)<14&&Math.abs(s.h-cur.h)<14);
+  i=(i+1)%VC_SIZES.length;
+  cfg.vcWinSize={w:VC_SIZES[i].w,h:VC_SIZES[i].h};
+  vcApplyWin(); saveAllDebounced();
+  toast("通话窗口："+VC_SIZE_LABEL[i]);
+};
+/* ⭕ 三个手势各绑一处：顶栏拖动 / 右下角缩放 / 胶囊拖动+点击恢复 */
+function vcInitDrag(){
+  const sc=document.getElementById("vcScreen");
+  const bar=document.getElementById("vcDragBar");
+  if(bar&&sc&&!bar._vcBound){
+    bar._vcBound=true;
+    let on=false, off=null;
+    bar.addEventListener("pointerdown",e=>{
+      /* ⛔ 顶栏上的三个按钮自己有 click，别被拖动吞掉 */
+      if(e.target.closest(".vc-top-btn")) return;
+      const b=_vcBounds(), r=sc.getBoundingClientRect();
+      off={x:e.clientX-b.left-r.left, y:e.clientY-b.top-r.top};
+      on=true; try{ bar.setPointerCapture(e.pointerId); }catch(_){}
+    });
+    bar.addEventListener("pointermove",e=>{
+      if(!on||!off) return;
+      const b=_vcBounds(), s=_vcSize();
+      const p=_vcClampPos(e.clientX-b.left-off.x, e.clientY-b.top-off.y, s.w, s.h);
+      sc.style.left=p.x+"px"; sc.style.top=p.y+"px";
+    });
+    const stop=()=>{
+      if(!on) return; on=false; off=null;
+      const b=_vcBounds(), r=sc.getBoundingClientRect();
+      cfg.vcWinPos={x:Math.round(r.left-b.left), y:Math.round(r.top-b.top)};
+      saveAllDebounced();
+    };
+    bar.addEventListener("pointerup",stop);
+    bar.addEventListener("pointercancel",stop);
+  }
+  const h=document.getElementById("vcResize");
+  if(h&&sc&&!h._vcBound){
+    h._vcBound=true;
+    let on=false, init=null;
+    h.addEventListener("pointerdown",e=>{
+      e.preventDefault(); e.stopPropagation();
+      const r=sc.getBoundingClientRect();
+      init={ex:e.clientX, ey:e.clientY, w:r.width, h:r.height};
+      on=true; try{ h.setPointerCapture(e.pointerId); }catch(_){}
+    });
+    h.addEventListener("pointermove",e=>{
+      if(!on||!init) return;
+      const b=_vcBounds();
+      sc.style.width =Math.max(180,Math.min(init.w+(e.clientX-init.ex), b.width -16))+"px";
+      sc.style.height=Math.max(260,Math.min(init.h+(e.clientY-init.ey), b.height-16))+"px";
+    });
+    const stop=()=>{
+      if(!on) return; on=false; init=null;
+      const r=sc.getBoundingClientRect();
+      cfg.vcWinSize={w:Math.round(r.width), h:Math.round(r.height)};
+      vcApplyWin(); saveAllDebounced();
+    };
+    h.addEventListener("pointerup",stop);
+    h.addEventListener("pointercancel",stop);
+  }
+  const pill=document.getElementById("vcPill");
+  if(pill&&!pill._vcBound){
+    pill._vcBound=true;
+    let on=false, off=null, moved=false;
+    pill.addEventListener("pointerdown",e=>{
+      if(e.target.closest(".vc-pill-end")) return;   /* 挂断按钮自己处理 */
+      const b=_vcBounds(), r=pill.getBoundingClientRect();
+      off={x:e.clientX-b.left-r.left, y:e.clientY-b.top-r.top};
+      on=true; moved=false;
+      try{ pill.setPointerCapture(e.pointerId); }catch(_){}
+    });
+    pill.addEventListener("pointermove",e=>{
+      if(!on||!off) return;
+      moved=true;
+      const b=_vcBounds(), w=pill.offsetWidth||180, hh=pill.offsetHeight||46;
+      const p=_vcClampPos(e.clientX-b.left-off.x, e.clientY-b.top-off.y, w, hh);
+      pill.style.left=p.x+"px"; pill.style.top=p.y+"px";
+    });
+    const stop=()=>{
+      if(!on) return; on=false; off=null;
+      if(moved){
+        const b=_vcBounds(), r=pill.getBoundingClientRect();
+        cfg.vcPillPos={x:Math.round(r.left-b.left), y:Math.round(r.top-b.top)};
+        saveAllDebounced();
+      } else window.vcRestore();   /* 没拖动 = 点击 → 把小窗叫回来 */
+      moved=false;
+    };
+    pill.addEventListener("pointerup",stop);
+    pill.addEventListener("pointercancel",stop);
+  }
+}
+/* ⭕ 转屏 / 改窗口大小后，原来存的位置可能已经出界，重新夹一次 */
+window.addEventListener("resize",()=>{
+  if(VC.state==="idle") return;
+  vcApplyWin(); vcApplyPill();
+});
+
+/* ⭕ 随机来电：时间点落盘，理由与 scheduleActive 完全一样（手机后台会冻结 JS） */
+function scheduleVoiceIncoming(resume){
+  clearTimeout(VC.inTimer);
+  if(!cfg.voiceCallOn||!cfg.voiceCallIncoming){ cfg.voiceInNextAt=0; return; }
+  const now=Date.now();
+  let wait;
+  if(resume && cfg.voiceInNextAt && cfg.voiceInNextAt>now)      wait=cfg.voiceInNextAt-now;
+  else if(resume && cfg.voiceInNextAt && cfg.voiceInNextAt<=now) wait=0;
+  else {
+    const mn=+cfg.voiceInMin||30, mx=+cfg.voiceInMax||90;
+    wait=randInt(Math.min(mn,mx),Math.max(mn,mx))*60*1000;
+    cfg.voiceInNextAt=now+wait;
+    saveAllDebounced();
+  }
+  VC.inTimer=setTimeout(()=>{
+    /* ⭕ 到点了也不一定真打过来：命中率就是 cfg.voiceInProb（默认 0.5%） */
+    const _p=(typeof cfg.voiceInProb==="number")?cfg.voiceInProb:0.5;
+    if(cfg.voiceCallOn&&cfg.voiceCallIncoming&&VC.state==="idle"&&Math.random()*100<_p) showIncomingVoiceCall();
+    scheduleVoiceIncoming(false);
+  }, wait);
+}
+/* ⛔ 关页面时正在通话 → 记一条再走，否则聊天里会缺一段通话记录 */
+window.addEventListener("beforeunload",()=>{
+  if(VC.state!=="calling"&&VC.state!=="live") return;
+  const dur=VC.dur, from=VC.from, st=VC.state;
+  _vcReset();
+  if(st==="live"&&dur>=VC_MIN_LOG) _vcWriteMsg(from==="self"?"self":"opp","语音通话已结束",dur);
+});
 
 // 主动发送的定时依赖 setTimeout，而手机后台/被系统挂起会直接冻结 JS——
 // 标签页被丢弃后重新加载，原来内存里的 activeTimer 随之消失。
