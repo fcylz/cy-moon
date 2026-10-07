@@ -142,9 +142,15 @@ const REPLY_P_LYRIC=3;     // 歌词（原 6%，调低）
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.20.0";
-const APP_BUILD   = "2026-10-07";
+const APP_VERSION = "1.21.0";
+const APP_BUILD   = "2026-10-08";
 const APP_CHANGELOG = [
+  { v:"1.21.0", d:"2026-10-08", items:[
+    "网易云登录新增**手机号 + 短信验证码**：验证码发到本机、直接填入登录，绕开「手机扫不了自己屏幕」的死结",
+    "登录页改为「扫码 / 手机号」两个 tab 切换；发送验证码带 60s 倒计时",
+    "取链统一把 http 升级成 https，修「https 前端播不了 http 音频」的播放失败",
+    "填完网易云 API 地址后自动刷新出登录界面（原来要重新进设置才刷新）",
+  ]},
   { v:"1.20.0", d:"2026-10-07", items:[
     "删除**语音合成 TTS**（设置区块、长按「播放语音」、存储管理缓存项、全部合成/缓存代码）",
     "网易云音乐面板**常驻**到设置页原 TTS 位置：打开设置即显示扫码登录 / 红心云盘歌单，不再弹窗",
@@ -6883,6 +6889,17 @@ const _nc = {
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
   },
+  async post(path, body) {
+    const b = _nc.base();
+    if (!b) throw new Error("未配置网易云 API 地址");
+    const r = await fetch(b + path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  },
   list: [], tab: "like", qrKey: "", qrTimer: null,
   levelName: () => (_NC_LEVELS.find(l => l.v === cfg.neteaseLevel) || { t: cfg.neteaseLevel }).t,
 };
@@ -6923,9 +6940,96 @@ _nc.renderLogin = () => {
     <div class="nc-login">
       <div class="nc-login-badge">未登录</div>
       <p class="nc-hint">登录你自己的网易云账号后，即可播放红心 / 云盘 / 歌单里你有权限的曲目（含 VIP、无损）。</p>
-      <button class="nc-btn" onclick="ncStartQr()">扫码登录</button>
-      <div class="nc-qr" id="ncQrWrap" style="display:none;"></div>
+      <div class="nc-tabs">
+        <button class="nc-tab on" onclick="ncLoginMode('qr', this)">扫码登录</button>
+        <button class="nc-tab" onclick="ncLoginMode('phone', this)">手机号登录</button>
+      </div>
+      <div class="nc-login-body" id="ncLoginBody">
+        <button class="nc-btn" onclick="ncStartQr()">扫码登录</button>
+        <div class="nc-qr" id="ncQrWrap" style="display:none;"></div>
+      </div>
     </div>`;
+};
+
+/* 登录方式切换：qr=扫码 / phone=手机号验证码 */
+window.ncLoginMode = (mode, btn) => {
+  if (btn && btn.parentElement) {
+    btn.parentElement.querySelectorAll(".nc-tab").forEach(b => b.classList.remove("on"));
+    btn.classList.add("on");
+  }
+  const body = document.getElementById("ncLoginBody");
+  if (!body) return;
+  if (mode === "phone") {
+    body.innerHTML = `
+      <div class="nc-phone-login">
+        <input class="nc-input" id="ncPhone" placeholder="手机号" type="tel" maxlength="11">
+        <div class="nc-captcha-row">
+          <input class="nc-input" id="ncCaptcha" placeholder="短信验证码" type="text" maxlength="6">
+          <button class="nc-btn nc-btn-send" id="ncSendCaptcha" onclick="ncSendCaptcha()">发送验证码</button>
+        </div>
+        <button class="nc-btn" onclick="ncPhoneLogin()">登录</button>
+      </div>`;
+  } else {
+    body.innerHTML = `
+      <button class="nc-btn" onclick="ncStartQr()">扫码登录</button>
+      <div class="nc-qr" id="ncQrWrap" style="display:none;"></div>`;
+  }
+};
+
+/* 发送短信验证码（带 60s 倒计时） */
+window.ncSendCaptcha = async () => {
+  const phone = document.getElementById("ncPhone")?.value.trim();
+  if (!/^1\d{10}$/.test(phone)) { toast("请输入正确的手机号", "warn"); return; }
+  const btn = document.getElementById("ncSendCaptcha");
+  try {
+    const r = await _nc.get("/api/captcha/sent?phone=" + encodeURIComponent(phone));
+    if (r.ok) {
+      toast("验证码已发送，请注意查收");
+      ncCaptchaCountdown(btn, 60);
+    } else {
+      toast(r.error || "发送失败", "warn");
+    }
+  } catch (e) {
+    toast("发送失败：" + e.message, "warn");
+  }
+};
+
+function ncCaptchaCountdown(btn, sec) {
+  if (!btn) return;
+  let s = sec;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = s + "s";
+  const t = setInterval(() => {
+    s--;
+    if (s <= 0) {
+      clearInterval(t);
+      btn.disabled = false;
+      btn.textContent = orig;
+    } else {
+      btn.textContent = s + "s";
+    }
+  }, 1000);
+}
+
+/* 手机号 + 验证码登录 */
+window.ncPhoneLogin = async () => {
+  const phone = document.getElementById("ncPhone")?.value.trim();
+  const captcha = document.getElementById("ncCaptcha")?.value.trim();
+  if (!/^1\d{10}$/.test(phone)) { toast("请输入正确的手机号", "warn"); return; }
+  if (!captcha) { toast("请输入验证码", "warn"); return; }
+  try {
+    const r = await _nc.post("/api/login/cellphone", { phone, captcha });
+    if (r.ok) {
+      toast("登录成功");
+      const st = await _nc.get("/api/status");
+      _nc.renderHome(st);
+    } else {
+      toast(r.error || "登录失败", "warn");
+    }
+  } catch (e) {
+    toast("登录失败：" + e.message, "warn");
+  }
 };
 
 /* 扫码登录 */

@@ -4139,6 +4139,19 @@
   padding:7px 14px; margin:0; font-size:calc(var(--fs)*.76);
   border:1px solid var(--border);
 }
+.nc-login-body { margin-top: 12px; }
+.nc-phone-login { display:flex; flex-direction:column; gap:10px; }
+.nc-input {
+  width:100%; box-sizing:border-box;
+  padding:11px 12px; border-radius:10px;
+  border:1px solid var(--border); background:var(--bg-soft);
+  color:var(--text); font-size:calc(var(--fs)*.88); outline:none;
+}
+.nc-input:focus { border-color:rgba(194,12,12,.5); }
+.nc-captcha-row { display:flex; gap:8px; }
+.nc-captcha-row .nc-input { flex:1; min-width:0; }
+.nc-btn-send { flex-shrink:0; margin-top:0; padding:11px 16px; font-size:calc(var(--fs)*.82); }
+.nc-btn-send:disabled { opacity:.5; }
 .nc-qr { margin-top:20px; }
 .nc-qr-img {
   width:210px; height:210px; border-radius:16px;
