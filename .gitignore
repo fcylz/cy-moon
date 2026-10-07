@@ -9,3 +9,9 @@ word-min.json
 # 其余（skills / 缓存 / 本地配置 / 可能的凭据）一律不进仓库 —— 本仓库是 public。
 .workbuddy/*
 !.workbuddy/memory/
+
+# CodeBuddy 生成的计划与本地配置，不进仓库
+.codebuddy/*
+
+# 网易云音乐自建 API 后端，独立部署，不进 Pages 前端仓库
+netease-api/
