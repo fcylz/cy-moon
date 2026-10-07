@@ -37,6 +37,9 @@ window.DEFAULTS = {
     recombOn:true, recombProb:15, recombOrder:3,
     recombMin:3, recombMax:30, recombMaxRepeat:3, recombMaxSteps:300,
     musicUrl:"", musicTitle:"", musicArtist:"", musicLrc:"",
+    /* ⭕ 网易云自建 API：地址留空 = 不启用该音乐源。
+       音质等级严格跳过 —— 指定音质拿不到也直接跳（不降级）。 */
+    neteaseApiBase:"", neteaseLevel:"lossless",
     /* ⭕ 一律用 jsDelivr —— 实测 raw.githubusercontent.com 在本机不可达（fetch 直接 failed），
        jsDelivr 是同一个 GitHub 仓库的 CDN 镜像，@main 指定分支。
        旧版本填过 raw 地址的，会在读取时自动换成 jsDelivr（见 _jsdelivr()）。 */
@@ -72,15 +75,7 @@ window.DEFAULTS = {
     syncChatImgs:false,
     syncLastPush:0, syncLastPull:0, syncShas:{},
     cloudMusicLastSync:0, cloudCardLastSync:0, cloudStickerLastSync:0, cloudDictLastSync:0, cloudCharLastSync:0, cloudXhyLastSync:0, activeSoundId:"__builtin_thud1__",
-customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolarBg:false,minimaxKey: "", minimaxVoice: "male-qn-qingse", autoTTS: false,ttsUrl: "https://api.minimax.chat/v1/t2a_v2",
-    ttsKey: "",
-    ttsGroupId: "",
-    ttsModel: "speech-01-turbo",
-    ttsVoice: "male-qn-qingse",
-    ttsSpeed: 1.0,
-    ttsVol: 1.0,
-    ttsPrompt: "",
-    ttsPersist: false,
+customHomeCss:"", customHomeJs:"", homeVisibility:{}, hideAesBg:false, hidePolarBg:false,
     sepPool: ["，","。","！","…","？","～"], sepNoneChance: 20,
     stickerOn: false,
     painterOn: false,      // ⭕ 随机画作功能总开关，默认关闭
@@ -147,9 +142,19 @@ const REPLY_P_LYRIC=3;     // 歌词（原 6%，调低）
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.18.1";
+const APP_VERSION = "1.20.0";
 const APP_BUILD   = "2026-10-07";
 const APP_CHANGELOG = [
+  { v:"1.20.0", d:"2026-10-07", items:[
+    "删除**语音合成 TTS**（设置区块、长按「播放语音」、存储管理缓存项、全部合成/缓存代码）",
+    "网易云音乐面板**常驻**到设置页原 TTS 位置：打开设置即显示扫码登录 / 红心云盘歌单，不再弹窗",
+  ]},
+  { v:"1.19.0", d:"2026-10-07", items:[
+    "新增**网易云音乐源**：自建 API + 扫码登录，登录后播红心 / 云盘 / 歌单里有权限的曲目",
+    "音质可选无损/Hi-Res；灰歌、下架、无该音质一律**严格跳过**，不做音源替换、不降级",
+    "后端 `netease-api/`（NeteaseCloudMusicApi + Express）：扫码登录、cookie 持久化、云盘专属取链",
+    "设置 → 音乐 新增「网易云 API 地址 / 音质」与入口按钮；与现有 GitHub 曲库并存",
+  ]},
   { v:"1.18.1", d:"2026-10-07", items:[
     "修复**点消息弹窗进聊天页看不到最新消息**：分帧渲染途中到达的消息会被签名「吃掉」，DOM 里没有却判定为最新",
     "签名改为按渲染快照记（`_chatViewSigAt(total)`），宁可落后也不许超前于 DOM",
@@ -949,17 +954,6 @@ function syncUI() {
     const v=src[k];
     el.innerText=(v!==undefined&&v!=="") ? v : (el.dataset.placeholder||"未定义");
   });
-  const _ttsUrl = document.getElementById("cfg_ttsUrl"); if(_ttsUrl) _ttsUrl.value = cfg.ttsUrl || "";
-  const _ttsKey = document.getElementById("cfg_ttsKey"); if(_ttsKey) _ttsKey.value = cfg.ttsKey || "";
-  const _ttsGroupId = document.getElementById("cfg_ttsGroupId"); if(_ttsGroupId) _ttsGroupId.value = cfg.ttsGroupId || "";
-  const _ttsModel = document.getElementById("cfg_ttsModel"); if(_ttsModel) _ttsModel.value = cfg.ttsModel || "";
-  const _ttsVoice = document.getElementById("cfg_ttsVoice"); if(_ttsVoice) _ttsVoice.value = cfg.ttsVoice || "";
-  const _ttsSpeed = document.getElementById("cfg_ttsSpeed"); if(_ttsSpeed) _ttsSpeed.value = cfg.ttsSpeed || 1.0;
-  const _ttsVol = document.getElementById("cfg_ttsVol"); if(_ttsVol) _ttsVol.value = cfg.ttsVol || 1.0;
-  const _ttsPrompt = document.getElementById("cfg_ttsPrompt"); if(_ttsPrompt) _ttsPrompt.value = cfg.ttsPrompt || "";
-  setSw("sw_ttsPersist", cfg.ttsPersist);
-  setSw("sw_autoTTS", cfg.autoTTS);
-  setSw("sw_autoTTS_adv", cfg.autoTTS);
   const wTitle=document.getElementById("wTitle");
   const wText=document.getElementById("wText");
   if(wTitle) wTitle.innerText=cfg.welcomeTitle||"";
@@ -1056,15 +1050,12 @@ fitHomeToScreen();
   setSw("sw_tradPrimary", cfg.tradPrimary!==false);
   const muEl = document.getElementById("cfg_musicUrl");
   if(muEl) muEl.value = cfg.musicUrl || "";
+  const naBase = document.getElementById("cfg_neteaseApiBase"); if(naBase) naBase.value = cfg.neteaseApiBase || "";
+  const naLvl = document.getElementById("cfg_neteaseLevel"); if(naLvl) naLvl.value = cfg.neteaseLevel || "lossless";
   // sync active sound display
   if(document.getElementById("modalSndList")) renderModalSoundList();
   applyTheme(); applyFontSize(); applyCustomFont(); applyAvSize();
   applyCustomBubble(); applyChatBg();applyCustomHomeStyles();applyHomeBg(); applyCustomChatCss(); applyAesBodyBg();
-  const mmKeyEl = document.getElementById("cfg_minimaxKey");
-  if(mmKeyEl) mmKeyEl.value = cfg.minimaxKey || "";
-  const mmVoiceEl = document.getElementById("cfg_minimaxVoice");
-  if(mmVoiceEl) mmVoiceEl.value = cfg.minimaxVoice || "";
-  setSw("sw_autoTTS", cfg.autoTTS);
 }
 
 function setSw(id,v){ const el=document.getElementById(id); if(!el)return; v?el.classList.add("on"):el.classList.remove("on"); }
@@ -1161,10 +1152,9 @@ window.cfgSet    = async(k,v)=>{ cfg[k]=v; await saveAll(); syncUI(); };
    ⛔ 写盘改用 saveAllDebounced()：连点多个开关只会落一次盘，比原来的逐次 await 更快。
 
    ⚠ 翻转哪个元素：**从点击事件里取**，不要用 "sw_"+k 拼。
-     因为 index.html 里存在两处 id 与 key 不同名的开关：
+     因为 index.html 里存在 id 与 key 不同名的开关：
        id="sw_showSeconds"   ← cfgToggle('timeShowSeconds')
-       id="sw_autoTTS_adv"   ← cfgToggle('autoTTS')
-     按命名拼接这两个会找不到元素，表现为"点了不动"。
+     按命名拼接这个会找不到元素，表现为"点了不动"。
      取 event.target 是最稳的：它就是被点中的 .sw 本身（或里面的 .sw-indicator）。
 
    ⛔ 全量 syncUI() 的取舍：syncUI 有 136 行（遍历 [data-img]、几十个 setSw、多个 querySelectorAll）。
@@ -2112,9 +2102,6 @@ function showCtxMenu(bubble, idx){
   const isSticker = !!chats[idx]?.sticker;
   const addItem = document.getElementById("ctxAddCard");
   if (addItem) addItem.style.display = (isSelf && !isSticker) ? "" : "none";
-  const ttsItem = document.getElementById("ctxTTS");
-  if (ttsItem) ttsItem.style.display = isSticker ? "none" : "";
-
   const rect = bubble.getBoundingClientRect();
   const vp = document.getElementById("vp").getBoundingClientRect();
   m.classList.add("on");
@@ -2137,13 +2124,6 @@ function bindGlobalClose(){
     if(sp.classList.contains("on")&&!sp.contains(e.target)&&!e.target.closest(".chat-head-tools")&&!e.target.closest(".h2-tools")) sp.classList.remove("on");
     const stp=document.getElementById("stickerPicker");
     if(stp&&stp.classList.contains("on")&&!stp.contains(e.target)&&!e.target.closest(".in-btn.sticker, .i2-sticker-btn, .i3-send.sticker, .i4-send.sticker")) stp.classList.remove("on");
-  });
-  document.getElementById("ctxTTS").addEventListener("click", e => {
-    e.stopPropagation();
-    if (ctxTargetIdx < 0) return;
-    const m = chats[ctxTargetIdx];
-    hideCtxMenu();
-    playMiniMaxTTS(m.text);
   });
   document.getElementById("ctxSearch").addEventListener("click", e => {
     e.stopPropagation();
@@ -2224,143 +2204,6 @@ function setSfxVolume(v) {
 document.addEventListener("touchstart", () => { try { getAudioCtx().resume(); } catch(e){} }, { once: true, passive: true });
 document.addEventListener("click",      () => { try { getAudioCtx().resume(); } catch(e){} }, { once: true, passive: true });
 
-// ─── 音频缓存（session 内存 Map + 可选 localStorage 持久化）───
-const _ttsMem = new Map(); // 内存缓存 ArrayBuffer
-const _TTS_LS_PREFIX = "ttsCache_";
-
-function _ttsCacheKey(text, voiceId, speed, prompt) {
-  return `${voiceId}|${speed}|${(prompt||"").slice(0,40)}|${text}`;
-}
-function _ttsGet(key) {
-  if (_ttsMem.has(key)) return _ttsMem.get(key);
-  if (cfg.ttsPersist) {
-    try {
-      const b64 = localStorage.getItem(_TTS_LS_PREFIX + key);
-      if (b64) {
-        const bin = atob(b64);
-        const buf = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-        _ttsMem.set(key, buf.buffer);
-        return buf.buffer;
-      }
-    } catch(e) {}
-  }
-  return null;
-}
-function _ttsSet(key, buffer) {
-  _ttsMem.set(key, buffer);
-  if (cfg.ttsPersist) {
-    try {
-      const bytes = new Uint8Array(buffer);
-      let bin = '';
-      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      localStorage.setItem(_TTS_LS_PREFIX + key, btoa(bin));
-    } catch(e) { /* 超出 quota 静默失败 */ }
-  }
-}
-
-// ─── 当前播放源，用于打断重叠 ───
-let _ttsSource = null;
-
-// ─── 试听按钮绑定的函数 ───
-window.testMiniMaxTTS = () => {
-  const el = document.getElementById("cfg_ttsTestText");
-  const text = el ? el.value.trim() : "";
-  if (!text) { toast("请输入要试听的文案", "warn"); return; }
-  playMiniMaxTTS(text);
-};
-
-// ─── 播放一段 ArrayBuffer（mp3）via AudioContext ───
-async function _playBuffer(buffer) {
-  const ctx = getAudioCtx();
-  if (ctx.state === "suspended") await ctx.resume();
-  const decoded = await ctx.decodeAudioData(buffer.slice(0));
-  if (_ttsSource) { try { _ttsSource.stop(); } catch(e){} }
-  const src = ctx.createBufferSource();
-  src.buffer = decoded;
-  src.connect(ctx.destination);
-  src.start(0);
-  _ttsSource = src;
-}
-
-// ─── 语音合成接口调用 ───
-window.playMiniMaxTTS = async (text) => {
-  const apiKey = cfg.ttsKey?.trim();
-  if (!apiKey) { toast("请先填写 TTS API Key", "warn"); return; }
-
-  const model   = (cfg.ttsModel  || "speech-01-turbo").trim();
-  const voiceId = (cfg.ttsVoice  || "male-qn-qingse").trim();
-  const speed   = parseFloat(cfg.ttsSpeed) || 1.0;
-  const vol     = parseFloat(cfg.ttsVol)   || 1.0;
-  const prompt  = (cfg.ttsPrompt || "").trim();
-  const cleanText = text.replace(/<[^>]*>?/gm, "").trim();
-  if (!cleanText) return;
-
-  // 提示词映射到 emotion 枚举（MiniMax 支持的值）
-  const EMOTION_MAP = {
-    "开心":  "happy",   "高兴":  "happy",   "愉快": "happy",
-    "悲伤":  "sad",     "难过":  "sad",
-    "愤怒":  "angry",   "生气":  "angry",
-    "恐惧":  "fearful", "害怕":  "fearful",
-    "厌恶":  "disgusted",
-    "惊讶":  "surprised",
-    "平静":  "neutral", "温柔":  "neutral", "轻声细语": "neutral",
-  };
-  let emotion = undefined;
-  for (const [kw, val] of Object.entries(EMOTION_MAP)) {
-    if (prompt.includes(kw)) { emotion = val; break; }
-  }
-
-  const apiText = cleanText; // 文本里不加任何提示词
-
-  const cacheKey = _ttsCacheKey(cleanText, voiceId, speed, prompt);
-  const cached = _ttsGet(cacheKey);
-  if (cached) {
-    await _playBuffer(cached);
-    toast("语音播放中");
-    return;
-  }
-
-  let url = (cfg.ttsUrl || "https://api.minimax.chat/v1/t2a_v2").trim();
-  const groupId = cfg.ttsGroupId?.trim();
-  if (groupId && !url.includes("GroupId"))
-    url += (url.includes("?") ? "&" : "?") + "GroupId=" + groupId;
-
-  try {
-    toast("正在合成语音…");
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model, text: apiText, stream: false,
-        voice_setting: { voice_id: voiceId, speed, vol, pitch: 0, ...(emotion ? { emotion } : {}) },
-        audio_setting: { sample_rate: 32000, bitrate: 128000, format: "mp3", channel: 1 }
-      })
-    });
-    const resJson = await response.json();
-
-    if (resJson.base_resp && resJson.base_resp.status_code !== 0) {
-      toast("合成失败：" + resJson.base_resp.status_msg, "warn");
-      return;
-    }
-
-    if (resJson.data && resJson.data.audio) {
-      const hexStr = resJson.data.audio;
-      const bytes  = new Uint8Array(hexStr.length / 2);
-      for (let i = 0; i < bytes.length; i++)
-        bytes[i] = parseInt(hexStr.substring(i * 2, i * 2 + 2), 16);
-      const buffer = bytes.buffer;
-      _ttsSet(cacheKey, buffer);
-      await _playBuffer(buffer);
-      toast("语音播放中");
-    } else {
-      toast("未返回音频数据，请检查参数", "warn");
-    }
-  } catch (err) {
-    console.error("TTS Error:", err);
-    toast("请求失败，请检查地址或网络", "warn");
-  }
-};
 window.openAddCardFromMsg = (m) => {
   const cats = Array.from(new Set(cards.map(c => c.cat)));
   const opts = cats.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
@@ -3996,7 +3839,6 @@ async function fireReply(){
     if(cfg.popupOn) showPopup(_puText,name,avatar);
   }
   notify(text,name,avatar);
-  if(cfg.autoTTS && text) playMiniMaxTTS(text);
 }
 
 /* ════════════════════════════════════════════
@@ -4457,7 +4299,6 @@ window.showStorageInfo = async () => {
   const stickerSize = JSON.stringify(stickers).length;
   const cardSize = JSON.stringify(cards).length;
   const soundSize = JSON.stringify(sounds).length;
-  const ttsCount = (()=>{ let c=0; for(let i=0;i<localStorage.length;i++) if(localStorage.key(i).startsWith('ttsCache_')) c++; return c; })();
   const cfgSize = JSON.stringify(cfg).length + JSON.stringify(texts).length;
   html += `<div>━━━━━━━━━━━━━</div>`;
   html += `<div>🖼 图片：<b>${(imgSize/1024).toFixed(0)} KB</b></div>`;
@@ -4466,7 +4307,6 @@ window.showStorageInfo = async () => {
   html += `<div>📝 字卡：<b>${cards.length} 张</b>（${(cardSize/1024).toFixed(0)} KB）</div>`;
   html += `<div>⚙ 配置+文案：${(cfgSize/1024).toFixed(0)} KB</div>`;
   if(sounds.length) html += `<div>🔊 音效：<b>${sounds.length} 个</b>（${(soundSize/1024).toFixed(0)} KB）</div>`;
-  html += `<div>🎵 TTS缓存：<b>${ttsCount} 条</b></div>`;
   const backupRaw = localStorage.getItem(BACKUP_KEY);
   if (backupRaw) {
     html += `<div>💾 本地备份：<b>${(new Blob([backupRaw]).size/1024).toFixed(1)} KB</b></div>`;
@@ -4475,18 +4315,6 @@ window.showStorageInfo = async () => {
   }
   html += '</div>';
   modal('存储用量', html);
-};
-// ⭐ 清理TTS缓存
-window.clearTTSCache = () => {
-  if(!confirm('清除所有 TTS 语音缓存？（不影响其他数据）')) return;
-  const keys = [];
-  for(let i=0;i<localStorage.length;i++) {
-    const k = localStorage.key(i);
-    if(k.startsWith('ttsCache_')) keys.push(k);
-  }
-  keys.forEach(k => localStorage.removeItem(k));
-  _ttsMem.clear();
-  toast(`已清除 ${keys.length} 条 TTS 缓存`);
 };
 // ⭐ 清理旧聊天记录（手动）
 window.trimOldChats = () => {
@@ -5196,6 +5024,7 @@ window.openApp = (id,opts)=>{
   if(id==="groupApp")      window.renderMembers();
   if(id==="statsApp")      { renderStats(); renderSurveys(); }
   if(id==="textsApp")      renderTextsApp();
+  if(id==="settingsApp")   openNeteasePanel();
   if(id==="chatApp"){
     /* ⭕ 脏检查：聊天 DOM 一直在（closeApp 只是 remove class），特征没变就直接复用。
        原来每次进聊天页都 innerHTML="" 重建最近 150 条 —— 那是"点进聊天界面慢"的主因。
@@ -5846,7 +5675,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (lockScreen) lockScreen.style.display = "none";
   }
 });
-// (旧版 playMiniMaxTTS 已合并到高级 TTS 函数，此处已移除重复定义)
 // ════════════════════════════════════════════
 // ══ 连句符号设置 ══
 // ════════════════════════════════════════════
@@ -7032,6 +6860,248 @@ window.playMsgSong = async (idx) => {
   if (musicAudio) { musicAudio.pause(); musicAudio = null; }
   await _playNextRandom(obj);
   toast("正在播放推荐歌曲");
+};
+
+/* ═══════════════════════════════════════════════════════════
+   ❤ 网易云音乐源（自建 API + 扫码登录）
+   - 未配置后端：面板提示去设置填地址
+   - 未登录：扫码 → 轮询 → 登录成功
+   - 已登录：红心 / 云盘 / 歌单 三个入口，点歌实时取链（url 有时效）
+   - 灰歌 / 无该音质：严格跳过，自动试下一首（不做音源替换、不降级）
+   ═══════════════════════════════════════════════════════════ */
+const _NC_LEVELS = [
+  { v:"standard", t:"标准" }, { v:"higher", t:"较高 192k" },
+  { v:"exhigh", t:"极高 320k" }, { v:"lossless", t:"无损" },
+  { v:"hires", t:"Hi-Res" },
+];
+const _nc = {
+  base: () => (cfg.neteaseApiBase || "").trim().replace(/\/+$/, ""),
+  async get(path) {
+    const b = _nc.base();
+    if (!b) throw new Error("未配置网易云 API 地址");
+    const r = await fetch(b + path);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  },
+  list: [], tab: "like", qrKey: "", qrTimer: null,
+  levelName: () => (_NC_LEVELS.find(l => l.v === cfg.neteaseLevel) || { t: cfg.neteaseLevel }).t,
+};
+
+/* 打开面板 */
+window.openNeteasePanel = async () => {
+  const embed = document.getElementById("ncEmbed");
+  if (!embed) return;
+  if (!_nc.base()) {
+    embed.innerHTML = `
+      <div class="nc-panel nc-empty">
+        <div class="nc-empty-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+        <p>还没有配置后端地址</p>
+        <p class="nc-hint">请在上方填入你自建服务的地址（如 http://127.0.0.1:3000）</p>
+      </div>`;
+    return;
+  }
+  embed.innerHTML = `<div class="nc-panel"><div class="nc-loading">连接中…</div></div>`;
+  try {
+    const st = await _nc.get("/api/status");
+    st.loggedIn ? _nc.renderHome(st) : _nc.renderLogin();
+  } catch (e) {
+    const el = document.querySelector(".nc-panel");
+    const raw = (e && e.message) || "";
+    /* ⭕ Failed to fetch 基本就三种：后端没启动 / 地址写错 / HTTPS 页面拦 HTTP 后端 */
+    const hint = /failed to fetch/i.test(raw)
+      ? "① 后端没启动？在 netease-api 目录执行 npm start，并保持窗口开着<br>② 地址应为 http:// 开头（如 http://127.0.0.1:3000），不要写 https<br>③ 若本页是 HTTPS 访问，部分浏览器/WebView 会拦截 HTTP 后端（换 http 页面打开，或给后端配 HTTPS）"
+      : escapeHtml(raw);
+    if (el) el.innerHTML = `<div class="nc-empty"><p>连接后端失败</p><p class="nc-hint">${hint}</p></div>`;
+  }
+};
+
+/* 未登录页 */
+_nc.renderLogin = () => {
+  const el = document.querySelector(".nc-panel");
+  if (!el) return;
+  el.innerHTML = `
+    <div class="nc-login">
+      <div class="nc-login-badge">未登录</div>
+      <p class="nc-hint">登录你自己的网易云账号后，即可播放红心 / 云盘 / 歌单里你有权限的曲目（含 VIP、无损）。</p>
+      <button class="nc-btn" onclick="ncStartQr()">扫码登录</button>
+      <div class="nc-qr" id="ncQrWrap" style="display:none;"></div>
+    </div>`;
+};
+
+/* 扫码登录 */
+window.ncStartQr = async () => {
+  const wrap = document.getElementById("ncQrWrap");
+  if (wrap) { wrap.style.display = "block"; wrap.innerHTML = '<div class="nc-qr-loading">生成二维码…</div>'; }
+  try {
+    const k = await _nc.get("/api/qr/key");
+    _nc.qrKey = k.key;
+    const c = await _nc.get("/api/qr/create?key=" + encodeURIComponent(k.key));
+    const src = (c.qrImg || "").startsWith("data:") ? c.qrImg : "data:image/png;base64," + (c.qrImg || "");
+    if (wrap) wrap.innerHTML = `
+      <img class="nc-qr-img" src="${src}" alt="登录二维码" onerror="this.outerHTML='<div class=\"nc-hint\">二维码加载失败</div>'">
+      <p class="nc-qr-tip" id="ncQrTip">打开网易云 App → 扫一扫</p>`;
+    _nc.pollQr();
+  } catch (e) {
+    if (wrap) wrap.innerHTML = `<div class="nc-hint">${escapeHtml(e.message)}</div>`;
+  }
+};
+_nc.pollQr = () => {
+  clearInterval(_nc.qrTimer);
+  _nc.qrTimer = setInterval(async () => {
+    try {
+      const c = await _nc.get("/api/qr/check?key=" + encodeURIComponent(_nc.qrKey));
+      const tip = document.getElementById("ncQrTip");
+      /* ⭕ 码语义：800 过期 | 801 待扫 | 802 待确认 | 803 成功 */
+      if (c.code === 803) {
+        clearInterval(_nc.qrTimer);
+        if (tip) tip.textContent = "登录成功";
+        toast("登录成功");
+        const st = await _nc.get("/api/status");
+        _nc.renderHome(st);
+      } else if (c.code === 800) {
+        clearInterval(_nc.qrTimer);
+        if (tip) tip.textContent = "二维码已过期，请重新点击扫码";
+      } else if (c.code === 802) {
+        if (tip) tip.textContent = "已扫码，请在手机上确认";
+      }
+      /* 801 待扫：继续轮询，不打断 */
+    } catch (e) {}
+  }, 2000);
+};
+
+/* 已登录首页 */
+_nc.renderHome = (st) => {
+  const el = document.querySelector(".nc-panel");
+  if (!el) return;
+  const vip = st.vipType ? '<span class="nc-vip">VIP</span>' : "";
+  el.innerHTML = `
+    <div class="nc-home">
+      <div class="nc-user">
+        <img class="nc-av" src="${escapeHtml(st.avatar || "")}" onerror="this.style.opacity=0">
+        <div class="nc-user-meta">
+          <div class="nc-user-name">${escapeHtml(st.nickname || "网易云用户")} ${vip}</div>
+          <div class="nc-user-sub">音质：${escapeHtml(_nc.levelName())} · 灰歌 / 无音质自动跳过</div>
+        </div>
+        <button class="nc-btn nc-btn-ghost" onclick="ncLogout()">退出</button>
+      </div>
+      <div class="nc-tabs">
+        <button class="nc-tab on" onclick="ncSwitchTab('like', this)">红心</button>
+        <button class="nc-tab" onclick="ncSwitchTab('cloud', this)">云盘</button>
+        <button class="nc-tab" onclick="ncSwitchTab('playlist', this)">歌单</button>
+      </div>
+      <div class="nc-list" id="ncList"><div class="nc-list-hint">加载中…</div></div>
+    </div>`;
+  _nc.loadList();
+};
+
+window.ncSwitchTab = (t, btn) => {
+  _nc.tab = t;
+  if (btn) { document.querySelectorAll(".nc-tab").forEach(b => b.classList.remove("on")); btn.classList.add("on"); }
+  _nc.loadList();
+};
+
+_nc.loadList = async () => {
+  const el = document.getElementById("ncList");
+  if (!el) return;
+  _nc.list = [];
+  el.innerHTML = '<div class="nc-list-hint">加载中…</div>';
+  try {
+    if (_nc.tab === "like") {
+      const r = await _nc.get("/api/like/list");
+      if (r.needLogin) { _nc.renderLogin(); return; }
+      _nc.list = r.list || []; _nc.renderList();
+    } else if (_nc.tab === "cloud") {
+      const r = await _nc.get("/api/cloud/list");
+      if (r.needLogin) { _nc.renderLogin(); return; }
+      _nc.list = (r.list || []).map(s => ({ ...s, cloud: true })); _nc.renderList();
+    } else {
+      const r = await _nc.get("/api/playlists");
+      if (r.needLogin) { _nc.renderLogin(); return; }
+      _nc.renderPlaylists(r.list || []);
+    }
+  } catch (e) {
+    el.innerHTML = `<div class="nc-list-hint">加载失败：${escapeHtml(e.message)}</div>`;
+  }
+};
+
+_nc.renderList = () => {
+  const el = document.getElementById("ncList");
+  if (!el) return;
+  if (!_nc.list.length) { el.innerHTML = '<div class="nc-list-hint">（空）</div>'; return; }
+  el.innerHTML = _nc.list.map((s, i) => `
+    <div class="nc-item" onclick="ncPlayAt(${i})">
+      <img class="nc-item-cover" src="${escapeHtml(s.cover || "")}" onerror="this.style.display='none'">
+      <div class="nc-item-info">
+        <div class="nc-item-name">${escapeHtml(s.name)}</div>
+        <div class="nc-item-artist">${escapeHtml(s.artist)}</div>
+      </div>
+      <svg class="nc-item-play" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/></svg>
+    </div>`).join("");
+};
+
+_nc.renderPlaylists = (list) => {
+  const el = document.getElementById("ncList");
+  if (!el) return;
+  if (!list.length) { el.innerHTML = '<div class="nc-list-hint">（没有歌单）</div>'; return; }
+  el.innerHTML = list.map(p => `
+    <div class="nc-item" onclick="ncOpenPlaylist(${p.id})">
+      <img class="nc-item-cover" src="${escapeHtml(p.cover)}" onerror="this.style.display='none'">
+      <div class="nc-item-info">
+        <div class="nc-item-name">${escapeHtml(p.name)}</div>
+        <div class="nc-item-artist">${p.trackCount} 首 · ${escapeHtml(p.creator)}</div>
+      </div>
+    </div>`).join("");
+};
+
+window.ncOpenPlaylist = async (id) => {
+  const el = document.getElementById("ncList");
+  if (!el) return;
+  el.innerHTML = '<div class="nc-list-hint">加载中…</div>';
+  try {
+    const r = await _nc.get("/api/playlist/tracks?id=" + id);
+    _nc.list = r.list || [];
+    _nc.renderList();
+  } catch (e) { el.innerHTML = `<div class="nc-list-hint">加载失败：${escapeHtml(e.message)}</div>`; }
+};
+
+/* 点歌：实时取链 → 严格跳过 → 自动下一首 */
+window.ncPlayAt = async (idx, autoCount) => {
+  autoCount = autoCount || 0;
+  const list = _nc.list;
+  if (!list || !list.length) return;
+  if (idx >= list.length) { toast("列表已播完（均被跳过）", "warn"); return; }
+  if (autoCount > 30) { toast("连续跳过过多，已停止", "warn"); return; }
+  const item = list[idx];
+  toast(`加载 ${item.name}…`);
+  try {
+    let url = null;
+    if (item.cloud) {
+      const r = await _nc.get("/api/cloud/url?id=" + item.id);
+      if (r.ok) url = r.url;
+    } else {
+      const r = await _nc.get(`/api/song/url?id=${item.id}&level=${encodeURIComponent(cfg.neteaseLevel)}`);
+      if (r.ok) url = r.url;
+      else if (r.skip) {
+        const why = r.reason === "quality" ? "无该音质" : "灰歌/无版权";
+        toast(`已跳过：${item.name}（${why}）`, "warn");
+        return window.ncPlayAt(idx + 1, autoCount + 1);
+      }
+    }
+    if (!url) { toast(`已跳过：${item.name}`, "warn"); return window.ncPlayAt(idx + 1, autoCount + 1); }
+    let lrc = "";
+    try { const lr = await _nc.get("/api/lyric?id=" + item.id); lrc = lr.lrc || ""; } catch (e) {}
+    const obj = { name: `${item.name} - ${item.artist}`, mp3: url, lrc };
+    if (musicAudio) { musicAudio.pause(); musicAudio = null; }
+    await _playNextRandom(obj);
+    toast(`正在播放：${item.name}`);
+  } catch (e) {
+    toast("取链失败：" + e.message, "warn");
+  }
+};
+
+window.ncLogout = async () => {
+  try { await _nc.get("/api/logout"); toast("已退出登录"); } catch (e) {}
+  _nc.renderLogin();
 };
 
 // ═══ 云端字卡库 ═══

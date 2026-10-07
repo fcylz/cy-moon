@@ -415,9 +415,6 @@
     </div>
 
     <div class="ctx-menu" id="ctxMenu">
-        <div class="ctx-item" id="ctxTTS">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>播放语音
-      </div>
       <div class="ctx-item" id="ctxQuote">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>引用
       </div>
@@ -1125,57 +1122,26 @@
           <div class="sinput-row" id="cloudMusicStatus" style="display:none;border-top:1px solid var(--border);font-size:calc(var(--fs)*.72);color:var(--text-mute);padding:6px 14px;"></div>
         </div>
 
-        <!-- TTS -->
+        <!-- 网易云音乐（常驻） -->
         <div class="sblock">
-          <div class="sblock-label">语音合成 TTS</div>
-          <div class="stoggle-group">
-            <div class="stoggle-row">
-              <span>自动朗读</span>
-              <div class="sw" id="sw_autoTTS_adv" onclick="cfgToggle('autoTTS', event)"><div class="sw-indicator"></div></div>
-            </div>
-            <div class="stoggle-row">
-              <span>持久缓存</span>
-              <div class="sw" id="sw_ttsPersist" onclick="cfgToggle('ttsPersist', event)"><div class="sw-indicator"></div></div>
-            </div>
-          </div>
+          <div class="sblock-label">网易云音乐</div>
           <div class="sinput-stack">
             <div class="sinput-row">
               <span class="sinput-label">API 地址</span>
-              <input class="inp" id="cfg_ttsUrl" placeholder="https://api.minimax.chat/v1/t2a_v2" style="flex:1;min-width:0;text-align:right;font-size:10px;" oninput="cfgSet('ttsUrl',this.value.trim())">
+              <input class="inp" id="cfg_neteaseApiBase" placeholder="http://127.0.0.1:3000" style="flex:1;min-width:0;text-align:right;font-size:10px;" oninput="cfgSet('neteaseApiBase',this.value.trim())">
             </div>
             <div class="sinput-row">
-              <span class="sinput-label">API 密钥</span>
-              <input class="inp" type="password" id="cfg_ttsKey" placeholder="Bearer Token" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsKey',this.value.trim())">
-            </div>
-            <div class="sinput-row">
-              <span class="sinput-label">Group ID</span>
-              <input class="inp" id="cfg_ttsGroupId" placeholder="部分老账号必填" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsGroupId',this.value.trim())">
-            </div>
-            <div class="sinput-row">
-              <span class="sinput-label">模型</span>
-              <input class="inp" id="cfg_ttsModel" placeholder="speech-01-turbo" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsModel',this.value.trim())">
-            </div>
-            <div class="sinput-row">
-              <span class="sinput-label">音色 ID</span>
-              <input class="inp" id="cfg_ttsVoice" placeholder="male-qn-qingse" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsVoice',this.value.trim())">
-            </div>
-            <div class="sinput-row">
-              <span class="sinput-label">语气</span>
-              <input class="inp" id="cfg_ttsPrompt" placeholder="温柔、撒娇、小声" style="flex:1;min-width:0;text-align:right;" oninput="cfgSet('ttsPrompt',this.value.trim())">
-            </div>
-            <div class="sinput-row">
-              <span class="sinput-label">语速</span>
-              <input class="inp sm" type="number" step="0.1" id="cfg_ttsSpeed" placeholder="1.0" style="width:64px;" oninput="cfgSet('ttsSpeed',parseFloat(this.value)||1)">
-            </div>
-            <div class="sinput-row">
-              <span class="sinput-label">音量</span>
-              <input class="inp sm" type="number" step="0.1" id="cfg_ttsVol" placeholder="1.0" style="width:64px;" oninput="cfgSet('ttsVol',parseFloat(this.value)||1)">
+              <span class="sinput-label">音质</span>
+              <select class="inp" id="cfg_neteaseLevel" style="flex:1;min-width:0;text-align:right;font-size:11px;" onchange="cfgSet('neteaseLevel',this.value)">
+                <option value="standard">标准</option>
+                <option value="higher">较高 192k</option>
+                <option value="exhigh">极高 320k</option>
+                <option value="lossless" selected>无损</option>
+                <option value="hires">Hi-Res</option>
+              </select>
             </div>
           </div>
-          <div class="stts-test">
-            <input class="inp stts-input" id="cfg_ttsTestText" placeholder="输入想听的句子…" value="你好，很高兴遇见你。">
-            <button class="sbtn" onclick="testMiniMaxTTS()">播放试听</button>
-          </div>
+          <div class="nc-embed" id="ncEmbed"><div class="nc-loading">加载中…</div></div>
         </div>
 
       </div>
@@ -1217,11 +1183,6 @@
             <div class="snav-item" onclick="trimOldChats()">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
               <span>保留最近2000条聊天</span>
-              <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-            </div>
-            <div class="snav-item" onclick="clearTTSCache()">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
-              <span>清除TTS语音缓存</span>
               <svg class="cfg-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
             </div>
           </div>
