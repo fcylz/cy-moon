@@ -14,6 +14,40 @@ App 内也可以直接看：**数据 → 关于 · 版本**（手机上确认"�
 
 ---
 
+## v1.18.1 · 2026-10-07
+
+**主题：修复「点消息弹窗进聊天页，最新消息不显示」**
+
+### 根因：签名超前于 DOM
+
+进聊天页有一处脏检查 —— DOM 一直在（`closeApp` 只是摘 class），
+只要状态特征（`_chatViewSig`）没变就直接复用，不重建。
+
+而 `renderChats()` 是**分帧**的（一帧 25 条）。渲染途中到达的新消息：
+
+1. `appendNewChats()` 看到 `_chatRenderInProgress` 为 true → 直接 return，DOM 不加这一条；
+2. 最后一帧收尾执行 `_chatViewSig = _chatViewSigNow()` —— 用的是**当时**的 chats，
+   已经包含那条消息；
+3. 于是签名说"DOM 是最新的"，DOM 里其实没有。
+
+之后每次进聊天页都判定 fresh → 不重建 → **那条消息永远不显示**，
+直到再下一条消息把签名顶掉为止。实机复现：chats 135 条、DOM 134 行、
+`chatViewIsFresh()` 返回 true —— 典型"看着像最新消息丢了"。
+
+### 修法
+
+| 改动 | 说明 |
+|---|---|
+| `_chatViewSigAt(n)` | 签名可传「渲染时的快照长度」。renderChats 收尾只按 `total`（这轮真正渲染进去的末条）签名，不按当前 `chats.length` |
+| 收尾补刀 | 渲染结束后 `if(renderedMsgCount<chats.length) appendNewChats()`，把帧间到达的消息立刻补进 DOM |
+| `_renderToken` | 新一轮 renderChats 启动时旧轮自己退出，避免两轮交错 prepend 出重复气泡 |
+| `openApp(id,{toBottom:true})` | 弹窗点击时传：无条件滚到底。DOM 复用会保留上次滚动位置，用户翻过历史时进来停在半中间，也像"没显示最新" |
+
+⛔ 方向别搞反：签名**宁可落后**（多重建一次，等同旧行为），
+也绝不能超前于 DOM —— 超前一次，缺的那条消息就再也补不回来了。
+
+---
+
 ## v1.18.0 · 2026-10-03
 
 **主题：通话 UI 统一改成半透明毛玻璃；去掉沉浸模式**

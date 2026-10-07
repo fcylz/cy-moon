@@ -147,9 +147,15 @@ const REPLY_P_LYRIC=3;     // 歌词（原 6%，调低）
    用途有二：一是仓库根目录 CHANGELOG.md 与本表对应；二是**排查"手机壳子到底有没有加载到新构建"**：
    WebView 缓存很顽固，出问题时第一件事就是打开 数据 → 关于·版本 看这个号变没变。
    ⭕ 每次发版：改 APP_VERSION / APP_BUILD，并在 APP_CHANGELOG 顶部插一条。 */
-const APP_VERSION = "1.18.0";
-const APP_BUILD   = "2026-10-03";
+const APP_VERSION = "1.18.1";
+const APP_BUILD   = "2026-10-07";
 const APP_CHANGELOG = [
+  { v:"1.18.1", d:"2026-10-07", items:[
+    "修复**点消息弹窗进聊天页看不到最新消息**：分帧渲染途中到达的消息会被签名「吃掉」，DOM 里没有却判定为最新",
+    "签名改为按渲染快照记（`_chatViewSigAt(total)`），宁可落后也不许超前于 DOM",
+    "渲染收尾自动补上帧间到达的消息；新增 `_renderToken` 防止两轮渲染交错出重复气泡",
+    "点弹窗进聊天页时无条件滚到底（以前会保留上次的滚动位置，翻过历史就看着像没更新）",
+  ]},
   { v:"1.18.0", d:"2026-10-03", items:[
     "通话小窗 / 来电弹窗 / 最小化胶囊**统一改成半透明毛玻璃**：透得出下面的内容，白字仍读得清",
     "玻璃层：底色 rgba(14,19,30,.5) + blur(26px) saturate(170%) + 亮边 + 顶部高光；来电遮罩降到 .55 并加大模糊",
@@ -1923,8 +1929,13 @@ function buildMsgInto(frag, m, idx, ctx, lastDateRef){
    ⚠ 方向要保守：宁可签名过时（多重建一次，等同旧行为），
      也不要在 DOM 其实没更新时刷新签名（那会显示陈旧内容）。 */
 let _chatViewSig = null;
-function _chatViewSigNow(){
-  const n=chats.length, last=n?chats[n-1]:null;
+/* ⭕ n 可以传「渲染时的快照长度」，而不是当前 chats.length。
+   分帧渲染一帧 25 条，渲染途中到达的新消息**并不在这轮 DOM 里**；
+   签名若按当前 chats 算就会超前于 DOM（谎报"DOM 已是最新"），
+   之后每次进聊天页都判定 fresh → 那条消息永远不显示，直到再下一条消息来。
+   "点弹窗进聊天页看不到最新消息"就是这么来的。 */
+function _chatViewSigAt(n){
+  const last=n?chats[n-1]:null;
   return [
     n,
     last?(last.mid||""):"",                  /* 新消息 / 整体替换：末条 id 必变 */
@@ -1945,6 +1956,7 @@ function _chatViewSigNow(){
     texts.readText||"",
   ].join("|");
 }
+function _chatViewSigNow(){ return _chatViewSigAt(chats.length); }
 /* 特征一致且 DOM 非空 → 可以复用，不必重建 */
 function chatViewIsFresh(){
   const f=document.getElementById("chatFlow");
@@ -1953,8 +1965,12 @@ function chatViewIsFresh(){
 
 // 窗口化重建：只渲染最近 INITIAL_RENDER 条，从最新到最旧分块渲染，第一个 chunk 立刻显示最新消息
 let _chatRenderInProgress=false;
+/* ⭕ 渲染代号：新一轮 renderChats 启动时旧的那一轮必须自己退出。
+   否则两轮交错往同一个 #chatFlow 里 prepend，会出现重复气泡。 */
+let _renderToken=0;
 function renderChats(){
   const f=document.getElementById("chatFlow"); if(!f) return;
+  const token=++_renderToken;
   _chatRenderInProgress=true;
   const ctx=buildChatCtx();
   f.innerHTML="";
@@ -1963,6 +1979,7 @@ function renderChats(){
   renderStart=startTarget;
   let cursor=total; /* 从尾部开始，最旧的最先 0，最新的在 N-1 */
   (function renderChunk(){
+    if(token!==_renderToken) return;   /* 已被新一轮接管，本轮作废 */
     const frag=document.createDocumentFragment();
     const start=Math.max(cursor-CHUNK, startTarget);
     /* 块内从最新→最旧遍历，prepend 到 frag 头部，维持 oldest-top / newest-bottom */
@@ -1981,12 +1998,17 @@ function renderChats(){
     f.insertBefore(frag, f.firstChild);
     cursor=start;
     if(cursor>startTarget){ requestAnimationFrame(renderChunk); return; }
+    if(token!==_renderToken) return;
     _chatRenderInProgress=false;
     f.scrollTop=f.scrollHeight;
     renderedMsgCount=total; renderedLastDate=chats[total-1]&&chats[total-1].date||"";
     unreadCount=0; updateScrollBot();
     _flushPendingChatOps(f);
-    _chatViewSig=_chatViewSigNow();   /* ⭕ DOM 已是最新 → 记下特征，下次进页面可直接复用 */
+    /* ⭕ 签名只认这轮真正渲染进去的那些（total），不是当前 chats.length */
+    _chatViewSig=_chatViewSigAt(total);
+    /* ⭕ 补刀：分帧期间到达的消息本轮没渲染到，这里立刻补上。
+       以前这些消息会"卡在签名里"——DOM 没有、签名却说有了，于是再也不显示。 */
+    if(renderedMsgCount<chats.length) appendNewChats();
   })();
 }
 
@@ -4481,7 +4503,8 @@ function bindPopup(){
   p.addEventListener("mousedown",ds); p.addEventListener("touchstart",ds,{passive:true});
   document.addEventListener("mousemove",dm); document.addEventListener("touchmove",dm,{passive:true});
   document.addEventListener("mouseup",de); document.addEventListener("touchend",de);
-  p.addEventListener("click",()=>{ if(Math.abs(cy)<5){openApp("chatApp");hidePopup();} });
+  /* ⭕ toBottom：点弹窗就是冲着那条新消息来的，进来必须停在最新处 */
+  p.addEventListener("click",()=>{ if(Math.abs(cy)<5){openApp("chatApp",{toBottom:true});hidePopup();} });
 }
 function showPopup(text,name,avatar){
   document.getElementById("popAv").src=avatar||imgs.oppAvatar||window.DEFAULTS.PH_SVG;
@@ -5166,7 +5189,7 @@ function toast(t, type = "default") {
 
 // ─── App nav ───
 function setDockActive(id){ document.querySelectorAll(".dock-btn").forEach(b=>b.classList.toggle("active",b.dataset.app===id)); }
-window.openApp = id=>{
+window.openApp = (id,opts)=>{
   const el=document.getElementById(id); if(!el) return;
   el.classList.add("active"); currentApp=id; setDockActive(id);
   if(id==="cardsApp")      { window.renderCards(); window.renderStickers(); }
@@ -5179,6 +5202,13 @@ window.openApp = id=>{
        特征对不上、或 DOM 是空的（首次进入 / 数据整体换过），就照旧重建。 */
     if(!chatViewIsFresh()) renderChats();
     unreadCount=0; showHomeTypingBar(false); updateScrollBot();
+    /* ⭕ 从弹窗/通知点进来：用户的目的就是看那条新消息，无条件滚到底。
+       DOM 复用时（fresh）会保留上次的滚动位置 —— 用户若翻过历史，
+       进来就停在半中间，看着像"最新消息没显示"。 */
+    if(opts&&opts.toBottom){
+      const cf=document.getElementById("chatFlow");
+      if(cf){ cf.scrollTop=cf.scrollHeight; unreadCount=0; updateScrollBot(); }
+    }
     if((replyTimer)&&!typingNode){
       /* 分帧渲染进行中——延迟到渲染完成后再插入 typing 节点 */
       if(_chatRenderInProgress){
