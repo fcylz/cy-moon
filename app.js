@@ -40,9 +40,10 @@ window.DEFAULTS = {
     /* ⭕ 网易云自建 API：地址留空 = 不启用该音乐源。
        音质等级严格跳过 —— 指定音质拿不到也直接跳（不降级）。 */
     neteaseApiBase:"", neteaseLevel:"lossless",
-    /* ⭕ 一律用 jsDelivr —— 实测 raw.githubusercontent.com 在本机不可达（fetch 直接 failed），
-       jsDelivr 是同一个 GitHub 仓库的 CDN 镜像，@main 指定分支。
-       旧版本填过 raw 地址的，会在读取时自动换成 jsDelivr（见 _jsdelivr()）。 */
+    /* ⭕ 默认写 jsDelivr —— 实测 raw.githubusercontent.com 在本机不可达（fetch 直接 failed），
+       但它仍是「最新」的权威源：运行时由 _fetchCloudIndex 先试 raw（几分钟缓存）、不通再退回
+       下面的 jsDelivr 镜像；仓库根的 latest.json 负责告诉客户端权威条目数（见 _fetchCloudLatest）。
+       旧版本填过 raw 地址的，读取时仍会自动换成 jsDelivr（见 _jsdelivr()）。 */
     cloudMusicIndexUrl:"https://cdn.jsdelivr.net/gh/fcylz/cy-music@main/index.json",
     cloudCardIndexUrl:"https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Word/word.json",
     cloudStickerIndexUrl:"https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Meme/meme.json",
@@ -612,6 +613,103 @@ function _jsdelivr(url, fallback){
   if(!u) return "";
   const m=u.match(/^https?:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)$/);
   return m ? `https://cdn.jsdelivr.net/gh/${m[1]}/${m[2]}@${m[3]}/${m[4]}` : u;
+}
+
+/* ═══ 云端索引的权威源与版本探针 ═══
+   jsDelivr 的 @main 是「分支」引用（x-jsd-version-type: branch，s-maxage=12h）：仓库
+   同步完索引，边缘可能半天还在发旧快照；而旧快照的 version 又可能与最新那份完全相同
+   （改造前 version 从不自增，实测 cdn/gcore 的 2126 条与 raw 的 2783 条都写 2.2.0）。
+   所以：先用仓库根的 latest.json（raw，缓存约 5 分钟、几 KB）拿到权威条目数，
+   索引优先从 raw 取，raw 不通再退回 jsDelivr 镜像；图片仍钉 gcore（raw 图片不可达）。
+   latest.json 探针失败一律降级为旧逻辑，不影响正常拉取。 */
+const CLOUD_RAW_BASE = "https://raw.githubusercontent.com/fcylz/cy-chat/main/";
+const CLOUD_LATEST_URL = CLOUD_RAW_BASE + "latest.json";
+const CLOUD_LATEST_TTL = 5*60*1000;      // latest.json 自身在内存里留 5 分钟
+let _cloudLatest = { at:0, data:null };
+
+function _cloudManaged(url){
+  return /jsdelivr\.net|raw\.githubusercontent\.com/.test(url) && /\/cy-chat(@|\/)/.test(url);
+}
+function _cloudRawUrl(kind){
+  return CLOUD_RAW_BASE + (kind === "meme" ? "Meme/meme.json" : "Word/word.json");
+}
+function _cloudMirrorUrl(host, kind){
+  return `https://${host}.jsdelivr.net/gh/fcylz/cy-chat@main/` + (kind === "meme" ? "Meme/meme.json" : "Word/word.json");
+}
+function _cloudHost(url){
+  try { return new URL(url).hostname; } catch (e) { return "?"; }
+}
+async function _fetchCloudJson(url, timeoutMs){
+  const ac = typeof AbortController === "function" ? new AbortController() : null;
+  let timer = null;
+  const opts = { cache:"no-store" };
+  if (ac){ opts.signal = ac.signal; timer = setTimeout(()=>{ try{ ac.abort(); }catch(e){} }, timeoutMs || 8000); }
+  try {
+    const res = await fetch(url, opts);
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+async function _fetchCloudLatest(force){
+  const now = Date.now();
+  if (!force && _cloudLatest.at && now - _cloudLatest.at < CLOUD_LATEST_TTL) return _cloudLatest.data;
+  try {
+    const d = await _fetchCloudJson(CLOUD_LATEST_URL + "?t=" + now, 4000);
+    _cloudLatest = { at: now, data: d && typeof d === "object" ? d : null };
+  } catch (e) {
+    _cloudLatest = { at: now, data: null };
+  }
+  return _cloudLatest.data;
+}
+function _cloudItemCount(data){
+  if (!data || typeof data !== "object" || !data.categories) return 0;
+  return Object.values(data.categories).reduce((n,c)=>n+((c && c.items && c.items.length)||0),0);
+}
+function _cloudCmpVersion(a,b){
+  const pa=String(a||"0").split("."), pb=String(b||"0").split(".");
+  for(let i=0;i<Math.max(pa.length,pb.length);i++){
+    const x=parseInt(pa[i],10)||0, y=parseInt(pb[i],10)||0;
+    if(x!==y) return x-y;
+  }
+  return 0;
+}
+/* 候选地址：托管的默认链接 → raw 权威源 + 三个 jsDelivr 镜像；用户自己填的地址只认那一个 */
+function _cloudIndexCandidates(kind, indexUrl){
+  if (!_cloudManaged(indexUrl)) return [indexUrl];
+  const out = [_cloudRawUrl(kind), indexUrl];
+  ["gcore","fastly","cdn"].forEach(h=>out.push(_cloudMirrorUrl(h, kind)));
+  return out.filter((u,i)=>u && out.indexOf(u)===i);
+}
+/* 取索引：先问 latest.json 要权威条目数，按「条目数对齐 > 版本高 > 条目多」挑；
+   全失败返回 null，由调用方决定回缓存还是报错 */
+async function _fetchCloudIndex(kind, indexUrl){
+  const latest = await _fetchCloudLatest();
+  const want = latest && latest[kind];
+  const wantItems = (want && Number(want.items)) || 0;
+  const okList = [];
+  for (const u of _cloudIndexCandidates(kind, indexUrl)){
+    try {
+      // raw 在国内经常整个域名不通：给它更短的等待，免得把一次点击拖成 8 秒
+      const wait = /raw\.githubusercontent\.com/.test(u) ? 4000 : 8000;
+      const data = await _fetchCloudJson(_cloudIndexUrl(u), wait);
+      const items = _cloudItemCount(data);
+      if (!items) throw new Error("索引为空");
+      okList.push({ data, items, url:u, version:String(data.version||"") });
+      if (wantItems && items === wantItems) break;  // 已拿到权威内容，不必再打后面的镜像
+    } catch (e) {}
+  }
+  if (!okList.length) return null;
+  const exact = wantItems ? okList.filter(x=>x.items===wantItems) : [];
+  const pool = exact.length ? exact : okList;
+  let best = pool[0];
+  for (const x of pool){
+    // 追加式索引：同版本号下条目更多的才是新的（旧快照只有 2126 条，最新是 2783 条）
+    if (x.items > best.items) best = x;
+    else if (x.items === best.items && _cloudCmpVersion(x.version, best.version) > 0) best = x;
+  }
+  return best;
 }
 function fmtTime(d,withSec=false){ return withSec ? d.toTimeString().slice(0,8) : d.toTimeString().slice(0,5); }
 function fmtDate(d){ return d.getFullYear()+"."+String(d.getMonth()+1).padStart(2,"0")+"."+String(d.getDate()).padStart(2,"0"); }
@@ -7273,30 +7371,43 @@ async function fetchCloudCards(forceRefresh) {
     try {
       const cached = await lf.getItem(CLOUD_CARD_LF_KEY);
       /* ⭕ 缓存也要过期：否则云端新增的字卡永远进不来 */
-      if (cached && cached.cards && cached.cards.length && Date.now()-cached.at < CLOUD_INDEX_TTL) {
-        cloudCardCache = cached.cards;
-        updateCloudCardStatus(`已缓存 ${cached.cards.length} 组 · ${new Date(cached.at).toLocaleDateString()}`);
-        return cached.cards;
+      if (cached && cached.cards && cached.cards.length) {
+        let fresh = Date.now()-cached.at < CLOUD_INDEX_TTL;
+        /* ⭕ 没到期也要用 latest.json 对一次条目数：云端加了字卡、缓存还在 TTL 内时照样要重拉。
+           探针失败（raw 不通）就退回纯 TTL 判断，不影响可用性。 */
+        if (fresh) {
+          const latest = await _fetchCloudLatest();
+          const want = latest && latest.word && Number(latest.word.items);
+          if (want) {
+            const have = cached.cards.reduce((s, g) => s + ((g.items && g.items.length) || 0), 0);
+            fresh = have === want;
+          }
+        }
+        if (fresh) {
+          cloudCardCache = cached.cards;
+          updateCloudCardStatus(`已缓存 ${cached.cards.length} 组 · ${new Date(cached.at).toLocaleDateString()}`);
+          return cached.cards;
+        }
       }
     } catch (e) {}
   }
 
   updateCloudCardStatus("正在连接…");
   try {
-    const res = await fetch(_cloudIndexUrl(indexUrl));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const hit = await _fetchCloudIndex("word", indexUrl);
+    if (!hit) throw new Error("所有索引地址都不可用");
+    const data = hit.data;
     const cardsData = _normaliseCloudCards(data);
     if (!Array.isArray(cardsData) || !cardsData.length) throw new Error("索引为空");
 
     cloudCardCache = cardsData;
     if (lf) {
-      try { await lf.setItem(CLOUD_CARD_LF_KEY, { cards: cardsData, at: Date.now() }); } catch (e) {}
+      try { await lf.setItem(CLOUD_CARD_LF_KEY, { cards: cardsData, at: Date.now(), src: hit.url, version: hit.version }); } catch (e) {}
     }
     cfg.cloudCardLastSync = Date.now();
     saveAllDebounced();
     const totalItems = cardsData.reduce((s, g) => s + (g.items ? g.items.length : 0), 0);
-    updateCloudCardStatus(`共 ${cardsData.length} 组 · ${totalItems} 条 · 已同步`);
+    updateCloudCardStatus(`共 ${cardsData.length} 组 · ${totalItems} 条 · 已同步（${_cloudHost(hit.url)}）`);
     return cardsData;
   } catch (e) {
     updateCloudCardStatus("连接失败，使用缓存数据");
@@ -7574,29 +7685,37 @@ async function fetchCloudStickers(forceRefresh) {
     try {
       const cached = await lf.getItem(CLOUD_STICKER_LF_KEY);
       /* ⭕ 同上：缓存过期就重拉，云端新增的表情才拉得到 */
-      if (cached && cached.stickers && cached.stickers.length && Date.now()-cached.at < CLOUD_INDEX_TTL) {
-        cloudStickerCache = cached.stickers;
-        updateCloudStickerStatus(`已缓存 ${cached.stickers.length} 个 · ${new Date(cached.at).toLocaleDateString()}`);
-        return cached.stickers;
+      if (cached && cached.stickers && cached.stickers.length) {
+        let fresh = Date.now()-cached.at < CLOUD_INDEX_TTL;
+        /* ⭕ 同字卡：TTL 内也用 latest.json 对一次条目数，云端加了表情照样能立刻发现 */
+        if (fresh) {
+          const latest = await _fetchCloudLatest();
+          const want = latest && latest.meme && Number(latest.meme.items);
+          if (want) fresh = cached.stickers.length === want;
+        }
+        if (fresh) {
+          cloudStickerCache = cached.stickers;
+          updateCloudStickerStatus(`已缓存 ${cached.stickers.length} 个 · ${new Date(cached.at).toLocaleDateString()}`);
+          return cached.stickers;
+        }
       }
     } catch (e) {}
   }
 
   updateCloudStickerStatus("正在连接…");
   try {
-    const res = await fetch(_cloudIndexUrl(indexUrl));
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const stkData = _normaliseCloudStickers(data);
+    const hit = await _fetchCloudIndex("meme", indexUrl);
+    if (!hit) throw new Error("所有索引地址都不可用");
+    const stkData = _normaliseCloudStickers(hit.data);
     if (!Array.isArray(stkData) || !stkData.length) throw new Error("索引为空（暂无表情）");
 
     cloudStickerCache = stkData;
     if (lf) {
-      try { await lf.setItem(CLOUD_STICKER_LF_KEY, { stickers: stkData, at: Date.now() }); } catch (e) {}
+      try { await lf.setItem(CLOUD_STICKER_LF_KEY, { stickers: stkData, at: Date.now(), src: hit.url, version: hit.version }); } catch (e) {}
     }
     cfg.cloudStickerLastSync = Date.now();
     saveAllDebounced();
-    updateCloudStickerStatus(`共 ${stkData.length} 个 · 已同步`);
+    updateCloudStickerStatus(`共 ${stkData.length} 个 · 已同步（${_cloudHost(hit.url)}）`);
     return stkData;
   } catch (e) {
     updateCloudStickerStatus("连接失败，使用缓存数据");
@@ -7671,9 +7790,10 @@ function _cloudStickerBase() {
   const idx = _jsdelivr(cfg.cloudStickerIndexUrl, "https://cdn.jsdelivr.net/gh/fcylz/cy-chat@main/Meme/meme.json");
   // meme.json 内的 url 字段是相对于仓库根的（如 Meme/images/xxx.jpg），所以取 /main/ 层级
   const m = idx.match(/^(.+\/[^\/]+\/)Meme\/meme\.json$/);
-  if (m) return m[1];
-  // 兜底：去掉 meme.json，再退两层目录
-  return idx.replace(/Meme\/meme\.json$/, "");
+  const base = m ? m[1] : idx.replace(/Meme\/meme\.json$/, "");
+  /* ⭕ 图片直出源钉 gcore：cdn / fastly 对图片一律 301 到 raw.githubusercontent.com（国内不可达），
+     只有 gcore 直出字节。索引 JSON 从 raw 取也不影响这里 —— 图片与索引用不同源。 */
+  return base.replace(/\/\/(?:cdn|fastly)\.jsdelivr\.net\//i, "//gcore.jsdelivr.net/");
 }
 function _stickerSrc(s) {
   const raw = s.src || s.url || "";
